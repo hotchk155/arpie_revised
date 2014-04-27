@@ -997,6 +997,20 @@ enum
   ARP_INSERT_4_2
 };
 
+// Values for 
+enum 
+{
+  //                               0123456789012345
+  ARP_SCALE_CHROMATIC = (unsigned)0b0000111111111111,
+  ARP_SCALE_IONIAN    = (unsigned)0b0000101011010101,
+  ARP_SCALE_DORIAN    = (unsigned)0b0000101101010110,
+  ARP_SCALE_PHRYGIAN  = (unsigned)0b0000110101011010,
+  ARP_SCALE_LYDIAN    = (unsigned)0b0000101010110101,
+  ARP_SCALE_MIXOLYDIAN= (unsigned)0b0000101011010110,
+  ARP_SCALE_AEOLIAN   = (unsigned)0b0000101101011010,
+  ARP_SCALE_LOCRIAN   = (unsigned)0b0000110101101010
+};
+
 // ARP PARAMETERS
 byte arpType;              // arpeggio type
 char arpOctaveShift;       // octave transpose
@@ -1006,6 +1020,8 @@ byte arpVelocityMode;      // (0 = original, 1 = override)
 byte arpVelocity;          // velocity 
 byte arpGateLength;        // gate length (0 = tie notes)
 char arpTranspose;         // up/down transpose
+char arpForceToScaleBase;  // Force to scale base
+int arpForceToScaleMask;   // Force to scale intervals
 
 // CHORD INFO - notes held by user
 unsigned int arpChord[ARP_MAX_CHORD];
@@ -1055,7 +1071,9 @@ void arpInit()
   arpSequenceLength = 0;
   arpLastPlayAdvance = 0;
   arpTranspose = 0;
-
+  arpForceToScaleBase=0;
+  arpForceToScaleMask=ARP_SCALE_CHROMATIC;
+  
   // the pattern starts with all beats on
   for(int i=0;i<16;++i)
     arpPattern[i] = 1;
@@ -1183,7 +1201,6 @@ void arpBuildSequence()
 
       case ARP_TYPE_DOWN:
         chordIndex = arpChordLength - 1;
-        ;
         lastChordIndex = 0;
         transpose = arpTranspose + 12 * (arpOctaveShift + arpOctaveSpan - octaveCount - 1);    
         chordIndexDelta = -1;
@@ -1253,6 +1270,15 @@ void arpBuildSequence()
 
         // transpose as needed
         note += transpose;
+
+        // force to scale
+        int scaleNote = note - arpForceToScaleBase;
+        while(scaleNote<0)
+          scaleNote+=12;
+        if(!(arpForceToScaleMask & ((int)0x0800>>(scaleNote % 12))))
+          note++;
+        
+        // force to MIDI range           
         while(note>127)
           note -= 12;
         while(note<0)
@@ -2149,6 +2175,46 @@ void editTranspose(char keyPress, byte forceRefresh)
 }
 
 /////////////////////////////////////////////////////
+// EDIT TRANSPOSE EXT
+void editTransposeExt(char keyPress, byte forceRefresh)
+{  
+  if(keyPress >= 0 && keyPress <= 7)
+  {
+    switch(keyPress)
+    {
+      case 0: arpForceToScaleMask = ARP_SCALE_CHROMATIC; break;
+      case 1: arpForceToScaleMask = ARP_SCALE_IONIAN; break;
+      case 2: arpForceToScaleMask = ARP_SCALE_DORIAN; break;
+      case 3: arpForceToScaleMask = ARP_SCALE_PHRYGIAN; break;
+      case 4: arpForceToScaleMask = ARP_SCALE_LYDIAN; break;
+      case 5: arpForceToScaleMask = ARP_SCALE_MIXOLYDIAN; break;
+      case 6: arpForceToScaleMask = ARP_SCALE_AEOLIAN; break;
+      case 7: arpForceToScaleMask = ARP_SCALE_LOCRIAN; break;
+    }
+    arpRebuild = 1;
+    forceRefresh = 1;
+  }
+  
+  if(forceRefresh)
+  {
+    uiClearLeds();
+    uiSetLeds(0, 8, LED_DIM);
+    uiLeds[0] = LED_MEDIUM;
+    switch(arpForceToScaleMask)
+    {
+      case ARP_SCALE_CHROMATIC:  uiLeds[0] = LED_BRIGHT; break;
+      case ARP_SCALE_IONIAN:     uiLeds[1] = LED_BRIGHT; break;
+      case ARP_SCALE_DORIAN:     uiLeds[2] = LED_BRIGHT; break;
+      case ARP_SCALE_PHRYGIAN:   uiLeds[3] = LED_BRIGHT; break;
+      case ARP_SCALE_LYDIAN:     uiLeds[4] = LED_BRIGHT; break;
+      case ARP_SCALE_MIXOLYDIAN: uiLeds[5] = LED_BRIGHT; break;
+      case ARP_SCALE_AEOLIAN:    uiLeds[6] = LED_BRIGHT; break;
+      case ARP_SCALE_LOCRIAN:    uiLeds[7] = LED_BRIGHT; break;
+    }    
+  }
+}
+
+/////////////////////////////////////////////////////
 // EDIT RUN
 void editRun(unsigned long milliseconds)
 {
@@ -2270,7 +2336,10 @@ void editRun(unsigned long milliseconds)
       editMidiOutputChannel(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_TRANSPOSE:
-    editTranspose(dataKeyPress, forceRefresh);
+   if(EDIT_LONG_HOLD == editPressType)
+      editTransposeExt(dataKeyPress, forceRefresh);
+    else
+      editTranspose(dataKeyPress, forceRefresh);
     break;        
   case EDIT_MODE_PATTERN:
   default:

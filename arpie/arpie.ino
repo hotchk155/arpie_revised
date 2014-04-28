@@ -1020,8 +1020,8 @@ byte arpVelocityMode;      // (0 = original, 1 = override)
 byte arpVelocity;          // velocity 
 byte arpGateLength;        // gate length (0 = tie notes)
 char arpTranspose;         // up/down transpose
-char arpForceToScaleBase;  // Force to scale base
-int arpForceToScaleMask;   // Force to scale intervals
+char arpForceToScaleRoot;  // Defines the root note of the scale (0 = C)
+int arpForceToScaleMask;   // Force to scale interval mask (defines the scale)
 
 // CHORD INFO - notes held by user
 unsigned int arpChord[ARP_MAX_CHORD];
@@ -1071,7 +1071,7 @@ void arpInit()
   arpSequenceLength = 0;
   arpLastPlayAdvance = 0;
   arpTranspose = 0;
-  arpForceToScaleBase=0;
+  arpForceToScaleRoot=0;
   arpForceToScaleMask=ARP_SCALE_CHROMATIC;
   
   // the pattern starts with all beats on
@@ -1272,7 +1272,7 @@ void arpBuildSequence()
         note += transpose;
 
         // force to scale
-        int scaleNote = note - arpForceToScaleBase;
+        int scaleNote = note - arpForceToScaleRoot;
         while(scaleNote<0)
           scaleNote+=12;
         if(!(arpForceToScaleMask & ((int)0x0800>>(scaleNote % 12))))
@@ -2175,8 +2175,8 @@ void editTranspose(char keyPress, byte forceRefresh)
 }
 
 /////////////////////////////////////////////////////
-// EDIT TRANSPOSE EXT
-void editTransposeExt(char keyPress, byte forceRefresh)
+// FORCE TO SCALE TYPE
+void editForceToScaleType(char keyPress, byte forceRefresh)
 {  
   if(keyPress >= 0 && keyPress <= 7)
   {
@@ -2211,6 +2211,31 @@ void editTransposeExt(char keyPress, byte forceRefresh)
       case ARP_SCALE_AEOLIAN:    uiLeds[6] = LED_BRIGHT; break;
       case ARP_SCALE_LOCRIAN:    uiLeds[7] = LED_BRIGHT; break;
     }    
+  }
+}
+
+/////////////////////////////////////////////////////
+// FORCE TO SCALE ROOT NOTE
+void editForceToScaleRoot(char keyPress, byte forceRefresh)
+{  
+  // 0123456789012345
+  // DDDOXXXXXXXXXXXX        
+  if(keyPress >= 0 && keyPress < 12)
+  {
+    arpForceToScaleRoot = keyPress;
+    forceRefresh = 1;
+  }
+
+  if(forceRefresh)
+  {
+    uiClearLeds();
+    uiSetLeds(0, 12, LED_DIM);
+    uiLeds[1] = LED_MEDIUM;
+    uiLeds[3] = LED_MEDIUM;
+    uiLeds[6] = LED_MEDIUM;
+    uiLeds[8] = LED_MEDIUM;
+    uiLeds[10] = LED_MEDIUM;
+    uiLeds[arpForceToScaleRoot] = LED_BRIGHT;
   }
 }
 
@@ -2296,10 +2321,16 @@ void editRun(unsigned long milliseconds)
     editArpType(dataKeyPress, forceRefresh);
     break;        
   case EDIT_MODE_OCTAVE_SHIFT:
-    editOctaveShift(dataKeyPress, forceRefresh);
+    if(EDIT_LONG_HOLD == editPressType)
+      editForceToScaleRoot(dataKeyPress, forceRefresh);
+    else
+      editOctaveShift(dataKeyPress, forceRefresh);
     break;
   case EDIT_MODE_OCTAVE_SPAN:
-    editOctaveSpan(dataKeyPress, forceRefresh);
+    if(EDIT_LONG_HOLD == editPressType)
+      editForceToScaleType(dataKeyPress, forceRefresh);
+    else
+      editOctaveSpan(dataKeyPress, forceRefresh);
     break;
   case EDIT_MODE_RATE:
     editRate(dataKeyPress, forceRefresh);
@@ -2336,10 +2367,7 @@ void editRun(unsigned long milliseconds)
       editMidiOutputChannel(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_TRANSPOSE:
-   if(EDIT_LONG_HOLD == editPressType)
-      editTransposeExt(dataKeyPress, forceRefresh);
-    else
-      editTranspose(dataKeyPress, forceRefresh);
+    editTranspose(dataKeyPress, forceRefresh);
     break;        
   case EDIT_MODE_PATTERN:
   default:

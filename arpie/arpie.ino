@@ -236,14 +236,14 @@ void uiInit()
   pinMode(P_UI_READ0, INPUT);     
   pinMode(P_UI_STROBE, OUTPUT);     
 
-  pinMode(P_UI_HOLDSW, INPUT);
+  pinMode(P_UI_HOLDSW, INPUT_PULLUP);
   pinMode(P_UI_IN_LED, OUTPUT);
   pinMode(P_UI_OUT_LED, OUTPUT);
   pinMode(P_UI_SYNCH_LED, OUTPUT);
   pinMode(P_UI_HOLD_LED, OUTPUT);
 
   // enable pullups
-  digitalWrite(P_UI_HOLDSW, HIGH);
+//  digitalWrite(P_UI_HOLDSW, HIGH);
 
   for(int i=0;i<16;++i)
     uiLeds[i] = LED_OFF;  
@@ -871,14 +871,14 @@ void synchInit()
   synchSetTempo(SYNCH_DEFAULT_BPM);
   synchNextInternalTick = 0;
 
-  pinMode(P_SYNCH_TICK, INPUT);
-  pinMode(P_SYNCH_RESTART, INPUT);
-  pinMode(P_SYNCH_RUN, INPUT);
+  pinMode(P_SYNCH_TICK, INPUT_PULLUP);
+  pinMode(P_SYNCH_RESTART, INPUT_PULLUP);
+  pinMode(P_SYNCH_RUN, INPUT_PULLUP);
 
   // weak pull-ups
-  digitalWrite(P_SYNCH_TICK, HIGH);
-  digitalWrite(P_SYNCH_RESTART, HIGH);
-  digitalWrite(P_SYNCH_RUN, HIGH);
+  //digitalWrite(P_SYNCH_TICK, HIGH);
+  //digitalWrite(P_SYNCH_RESTART, HIGH);
+  //digitalWrite(P_SYNCH_RUN, HIGH);
 
   attachInterrupt(0, synchReset_ISR, RISING);
   attachInterrupt(1, synchTick_ISR, RISING);
@@ -997,18 +997,31 @@ enum
   ARP_INSERT_4_2
 };
 
-// Values for 
+// Values for force to scale masks
 enum 
 {
   //                               0123456789012345
-  ARP_SCALE_CHROMATIC = (unsigned)0b0000111111111111,
-  ARP_SCALE_IONIAN    = (unsigned)0b0000101011010101,
-  ARP_SCALE_DORIAN    = (unsigned)0b0000101101010110,
-  ARP_SCALE_PHRYGIAN  = (unsigned)0b0000110101011010,
-  ARP_SCALE_LYDIAN    = (unsigned)0b0000101010110101,
-  ARP_SCALE_MIXOLYDIAN= (unsigned)0b0000101011010110,
-  ARP_SCALE_AEOLIAN   = (unsigned)0b0000101101011010,
-  ARP_SCALE_LOCRIAN   = (unsigned)0b0000110101101010
+  ARP_SCALE_CHROMATIC = (unsigned)0b0000111111111111,  //no scale
+  ARP_SCALE_IONIAN    = (unsigned)0b0000101011010101,  //diatonic modes
+  ARP_SCALE_DORIAN    = (unsigned)0b0000101101010110,  //:
+  ARP_SCALE_PHRYGIAN  = (unsigned)0b0000110101011010,  //:
+  ARP_SCALE_LYDIAN    = (unsigned)0b0000101010110101,  //:
+  ARP_SCALE_MIXOLYDIAN= (unsigned)0b0000101011010110,  //:
+  ARP_SCALE_AEOLIAN   = (unsigned)0b0000101101011010,  //:
+  ARP_SCALE_LOCRIAN   = (unsigned)0b0000110101101010,  //:
+};
+
+// Force to scale mode for out of scale notes
+enum
+{
+    ARP_SCALE_ADJUST_SKIP   = (unsigned)0x0000,  // Out of scale notes are skipped
+    ARP_SCALE_ADJUST_MUTE   = (unsigned)0x1000,  // Out of scale notes are muted
+    ARP_SCALE_ADJUST_FLAT   = (unsigned)0x2000,  // Out of scale notes are flattened to bring them to scale
+    ARP_SCALE_ADJUST_SHARP  = (unsigned)0x3000,  // Out of scale notes are sharpened to bring them to scale
+    ARP_SCALE_ADJUST_TOGGLE = (unsigned)0x4000,  // Out of scale notes are sharpened/flattened alternately
+    
+    ARP_SCALE_ADJUST_MASK   = (unsigned)0x7000,        
+    ARP_SCALE_TOGGLE_FLAG   = (unsigned)0x8000
 };
 
 // ARP PARAMETERS
@@ -1021,7 +1034,7 @@ byte arpVelocity;          // velocity
 byte arpGateLength;        // gate length (0 = tie notes)
 char arpTranspose;         // up/down transpose
 char arpForceToScaleRoot;  // Defines the root note of the scale (0 = C)
-int arpForceToScaleMask;   // Force to scale interval mask (defines the scale)
+unsigned int arpForceToScaleMask;   // Force to scale interval mask (defines the scale)
 
 // CHORD INFO - notes held by user
 unsigned int arpChord[ARP_MAX_CHORD];
@@ -1072,7 +1085,7 @@ void arpInit()
   arpLastPlayAdvance = 0;
   arpTranspose = 0;
   arpForceToScaleRoot=0;
-  arpForceToScaleMask=ARP_SCALE_CHROMATIC;
+  arpForceToScaleMask=ARP_SCALE_CHROMATIC|ARP_SCALE_ADJUST_SHARP;
   
   // the pattern starts with all beats on
   for(int i=0;i<16;++i)
@@ -1174,6 +1187,9 @@ void arpBuildSequence()
   while(nextPass && 
     tempSequenceLength < ARP_MAX_SEQUENCE)
   {
+    arpForceToScaleMask ^= ARP_SCALE_TOGGLE_FLAG;
+    byte adjustToggle = !!(arpForceToScaleMask & ARP_SCALE_TOGGLE_FLAG);
+    
     // this loop is for the octave span
     int octaveCount;
     for(octaveCount = 0; 
@@ -1267,6 +1283,7 @@ void arpBuildSequence()
         // fetch the current note
         int note = ARP_GET_NOTE(chord[chordIndex]);
         byte velocity = ARP_GET_VELOCITY(chord[chordIndex]);
+        byte skipNote = 0;
 
         // transpose as needed
         note += transpose;
@@ -1276,23 +1293,49 @@ void arpBuildSequence()
         while(scaleNote<0)
           scaleNote+=12;
         if(!(arpForceToScaleMask & ((int)0x0800>>(scaleNote % 12))))
-          note++;
+        {
+          switch(arpForceToScaleMask & ARP_SCALE_ADJUST_MASK)
+          { 
+              case ARP_SCALE_ADJUST_SKIP: 
+                skipNote = 1;
+                break;
+              case ARP_SCALE_ADJUST_MUTE: 
+                note = 0; 
+                break;
+              case ARP_SCALE_ADJUST_FLAT: 
+                --note; 
+                break;
+              case ARP_SCALE_ADJUST_SHARP: 
+                ++note; 
+                break;
+              case ARP_SCALE_ADJUST_TOGGLE: 
+                if(adjustToggle)
+                  ++note;
+                else
+                  --note;
+                adjustToggle = !adjustToggle;
+                break;
+          }
+        }
         
-        // force to MIDI range           
-        while(note>127)
-          note -= 12;
-        while(note<0)
-          note += 12;          
-        int newNote = ARP_MAKE_NOTE(note, velocity);
-
-        // track lowest and highest notes
-        if(note > ARP_GET_NOTE(highestNote))
-          highestNote = newNote;
-        if(note < ARP_GET_NOTE(lowestNote))
-          lowestNote = newNote;
-
-        // insert into sequence
-        tempSequence[tempSequenceLength++] = newNote;
+        if(!skipNote)
+        {
+          // force to MIDI range           
+          while(note>127)
+            note -= 12;
+          while(note<0)
+            note += 12;          
+          int newNote = ARP_MAKE_NOTE(note, velocity);
+  
+          // track lowest and highest notes
+          if(note > ARP_GET_NOTE(highestNote))
+            highestNote = newNote;
+          if(note < ARP_GET_NOTE(lowestNote))
+            lowestNote = newNote;
+  
+          // insert into sequence
+          tempSequence[tempSequenceLength++] = newNote;
+        }
 
         // have we reached the last note we want?
         if(chordIndex == lastChordIndex)
@@ -2178,18 +2221,24 @@ void editTranspose(char keyPress, byte forceRefresh)
 // FORCE TO SCALE TYPE
 void editForceToScaleType(char keyPress, byte forceRefresh)
 {  
-  if(keyPress >= 0 && keyPress <= 7)
+  if(keyPress >= 0)
   {
     switch(keyPress)
     {
-      case 0: arpForceToScaleMask = ARP_SCALE_CHROMATIC; break;
-      case 1: arpForceToScaleMask = ARP_SCALE_IONIAN; break;
-      case 2: arpForceToScaleMask = ARP_SCALE_DORIAN; break;
-      case 3: arpForceToScaleMask = ARP_SCALE_PHRYGIAN; break;
-      case 4: arpForceToScaleMask = ARP_SCALE_LYDIAN; break;
-      case 5: arpForceToScaleMask = ARP_SCALE_MIXOLYDIAN; break;
-      case 6: arpForceToScaleMask = ARP_SCALE_AEOLIAN; break;
-      case 7: arpForceToScaleMask = ARP_SCALE_LOCRIAN; break;
+      case 0: arpForceToScaleMask |= ARP_SCALE_CHROMATIC; break;
+      case 1: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_IONIAN; break;
+      case 2: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_DORIAN; break;
+      case 3: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_PHRYGIAN; break;
+      case 4: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_LYDIAN; break;
+      case 5: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_MIXOLYDIAN; break;
+      case 6: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_AEOLIAN; break;
+      case 7: arpForceToScaleMask &= ~ARP_SCALE_CHROMATIC; arpForceToScaleMask |= ARP_SCALE_LOCRIAN; break;
+      
+      case 11: arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; arpForceToScaleMask |= ARP_SCALE_ADJUST_SKIP; break;
+      case 12: arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; arpForceToScaleMask |= ARP_SCALE_ADJUST_MUTE; break;
+      case 13: arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; arpForceToScaleMask |= ARP_SCALE_ADJUST_FLAT; break;
+      case 14: arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; arpForceToScaleMask |= ARP_SCALE_ADJUST_SHARP; break;
+      case 15: arpForceToScaleMask &= ~ARP_SCALE_ADJUST_MASK; arpForceToScaleMask |= ARP_SCALE_ADJUST_TOGGLE; break;
     }
     arpRebuild = 1;
     forceRefresh = 1;
@@ -2199,8 +2248,10 @@ void editForceToScaleType(char keyPress, byte forceRefresh)
   {
     uiClearLeds();
     uiSetLeds(0, 8, LED_DIM);
+    uiSetLeds(11, 4, LED_DIM);
     uiLeds[0] = LED_MEDIUM;
-    switch(arpForceToScaleMask)
+    uiLeds[14] = LED_MEDIUM;
+    switch(arpForceToScaleMask & ARP_SCALE_CHROMATIC)
     {
       case ARP_SCALE_CHROMATIC:  uiLeds[0] = LED_BRIGHT; break;
       case ARP_SCALE_IONIAN:     uiLeds[1] = LED_BRIGHT; break;
@@ -2210,6 +2261,14 @@ void editForceToScaleType(char keyPress, byte forceRefresh)
       case ARP_SCALE_MIXOLYDIAN: uiLeds[5] = LED_BRIGHT; break;
       case ARP_SCALE_AEOLIAN:    uiLeds[6] = LED_BRIGHT; break;
       case ARP_SCALE_LOCRIAN:    uiLeds[7] = LED_BRIGHT; break;
+    }    
+    switch(arpForceToScaleMask & ARP_SCALE_ADJUST_MASK)
+    {
+      case ARP_SCALE_ADJUST_SKIP: uiLeds[11] = LED_BRIGHT; break;
+      case ARP_SCALE_ADJUST_MUTE: uiLeds[12] = LED_BRIGHT; break;
+      case ARP_SCALE_ADJUST_FLAT: uiLeds[13] = LED_BRIGHT; break;
+      case ARP_SCALE_ADJUST_SHARP: uiLeds[14] = LED_BRIGHT; break;
+      case ARP_SCALE_ADJUST_TOGGLE: uiLeds[15] = LED_BRIGHT; break;
     }    
   }
 }
@@ -2223,6 +2282,7 @@ void editForceToScaleRoot(char keyPress, byte forceRefresh)
   if(keyPress >= 0 && keyPress < 12)
   {
     arpForceToScaleRoot = keyPress;
+    arpRebuild = 1;
     forceRefresh = 1;
   }
 

@@ -8,7 +8,7 @@
 //    //      // //       //    //  //  //
 //      //////   //       //////    //    ////
 //      MIDI ARPEGGIATOR  //
-//      hotchk155/2013    //
+//      hotchk155/2013-14 //
 //
 //    Revision History   
 //    1.00  16Apr13  Baseline 
@@ -16,9 +16,10 @@
 //    1.02  26Apr13  Synch source/input lockout options
 //    1.03  12May13  Fix issue with synch thru/change lockout blink rate
 //    1.04  09Nov13  Support MIDI stop/continue on external synch
+//    1.05  16May14  Force to scale options
 //
 #define VERSION_HI  1
-#define VERSION_LO  4
+#define VERSION_LO  5
 
 //
 // INCLUDE FILES

@@ -17,7 +17,7 @@
 //    1.03  12May13  Fix issue with synch thru/change lockout blink rate
 //    1.04  09Nov13  Support MIDI stop/continue on external synch
 //    1.05  16May14  Force to scale options
-//    1.06 
+//    1.06  
 //
 #define VERSION_HI  1
 #define VERSION_LO  6
@@ -1134,7 +1134,7 @@ byte arpRefresh;  // whether the pattern index is changed
 
 // STOP NOTE - remembers which (single) note is playing
 // and when it should be stopped
-byte arpStopNote;
+byte arpPlayingNotes[16];
 unsigned long arpStopNoteTime;
 
 // used to time the length of a step
@@ -1148,6 +1148,8 @@ byte arpRebuild;          // whether the sequence needs to be rebuilt
 // ARP INIT
 void arpInit()
 {
+  int i;
+  
   //  arpHold = 0;
   arpType = ARP_TYPE_UP;
   arpOctaveShift = 0;
@@ -1160,7 +1162,6 @@ void arpInit()
   arpPatternLength = 16;
   arpRefresh = 0;
   arpRebuild = 0;
-  arpStopNote = 0;
   arpGateLength = 10;
   arpSequenceLength = 0;
   arpLastPlayAdvance = 0;
@@ -1170,8 +1171,58 @@ void arpInit()
   arpChordRootNote = -1;
   
   // the pattern starts with all beats on
-  for(int i=0;i<16;++i)
+  for(i=0;i<16;++i)
     arpPattern[i] = 1;
+
+  // no notes playing
+  for(i=0;i<16;++i)
+    arpPlayingNotes[i] = 0;    
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// START A NOTE PLAYING 
+// We remember the note is playing so we can stop it later. If an additional 
+// "note set" is provided then we log it there too
+void arpStartNote(byte note, byte velocity, unsigned long milliseconds, byte *noteSet)
+{  
+  if(note<128)
+  {
+    midiWrite(MIDI_MK_NOTE, note, velocity, 2, milliseconds);          
+    byte n = (1<<(note&0x07));
+    arpPlayingNotes[note>>3] |= n;
+    if(noteSet)
+      noteSet[note>>3] |= n;
+  }    
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// STOP PLAYING NOTES
+// Stop all currently playing notes. If a "note set" is provided then any notes
+// present in it are left alone and remain playing
+void arpStopNotes(unsigned long milliseconds, byte *excludedNoteSet)
+{ 
+  for(int i=0; i<16; ++i)  
+  {
+    if(arpPlayingNotes[i])
+    {
+      byte note = i<<3;
+      byte n = arpPlayingNotes[i];
+      byte m = 0x01;
+      while(m)
+      {
+        if(n&m)
+        {
+          if(!excludedNoteSet || !(excludedNoteSet[i]&m))
+          {
+            midiWrite(MIDI_MK_NOTE, note, 0, 2, milliseconds);
+            arpPlayingNotes[i] &= ~m;
+          }
+        }
+        ++note;
+        m<<=1;
+      }
+    }
+  }
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1633,6 +1684,8 @@ void arpReadInput(unsigned long milliseconds)
 // RUN ARPEGGIATOR
 void arpRun(unsigned long milliseconds)
 {  
+  byte noteSet[16] = {0};
+  
   // update the chord based on user input
   arpReadInput(milliseconds);
 
@@ -1667,17 +1720,13 @@ void arpRun(unsigned long milliseconds)
 
       // start the note playing
       if(note > 0)
-        midiWrite(MIDI_MK_NOTE, note, velocity, 2, milliseconds);
+        arpStartNote(note, velocity, milliseconds, noteSet);
 
       // if the previous note is still playing then stop it
       // (should be the case only for "tie" mode)
-      if(arpStopNote && arpStopNote != note)
-      {
-        midiWrite(MIDI_MK_NOTE, arpStopNote, 0, 2, milliseconds);
-      }
+      arpStopNotes(milliseconds, noteSet);
 
       // need to work out the gate length for this note
-      arpStopNote = note;
       if(arpGateLength)
       {              
         // Set the stop period to occur after a certain
@@ -1697,13 +1746,11 @@ void arpRun(unsigned long milliseconds)
   }
   // check if a note needs to be stopped.. either at end of playing or if there is no sequence
   // and we're in tied note mode
-  else if(arpStopNote && (
-  ((arpStopNoteTime && arpStopNoteTime < milliseconds) || 
-    (!arpStopNoteTime && !arpSequenceLength))))
+  else if((arpStopNoteTime && arpStopNoteTime < milliseconds) || 
+    (!arpStopNoteTime && !arpSequenceLength))
   {
-    // stop the ringing note
-    midiWrite(MIDI_MK_NOTE, arpStopNote, 0, 2, milliseconds);
-    arpStopNote = 0;
+    // stop the ringing notes
+    arpStopNotes(milliseconds, NULL);
     arpStopNoteTime = 0;
   }
 }
@@ -2358,11 +2405,8 @@ void editMidiOutputChannel(char keyPress, byte forceRefresh)
 {
   if(keyPress >= 0 && keyPress <= 15)
   {
-    if((midiSendChannel != keyPress) && arpStopNote)
-    {
-      midiWrite(MIDI_MK_NOTE, arpStopNote, 0, 2, millis());
-      arpStopNote = 0;
-    }
+    if(midiSendChannel != keyPress)
+      arpStopNotes(millis(), NULL);
     midiSendChannel = keyPress;
     eepromSet(EEPROM_OUTPUT_CHAN, midiSendChannel);
     forceRefresh = 1;

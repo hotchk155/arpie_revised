@@ -1512,69 +1512,76 @@ void arpReadInput(unsigned long milliseconds)
       
     byte note = midiParams[0];
     byte velocity = midiParams[1];
-    if(!!(uiHoldType & UI_HOLD_LOCKED))
+    
+    // Note on message
+    if(MIDI_IS_NOTE_ON(msg) && velocity && note)
     {
+      // Check for a lock out (This prevents any new notes
+      // being added to the chord, but we still need to track
+      // notes that get released)
+      if(!!(uiHoldType & UI_HOLD_LOCKED))
+      {
+       // transpose by MIDI?
        if(!!(gPreferences & PREF_MIDITRANSPOSE))
        {
-         if(velocity && arpChordRootNote != -1)
+         // transpose things
+         if(arpChordRootNote != -1)
          {
             arpTranspose = note - arpChordRootNote;                        
             arpRebuild = 1;           
             editForceRefresh = 1;
          }
        }
-       break;
-    }
-
-    // NOTE ON MESSAGE
-    if(MIDI_IS_NOTE_ON(msg) && velocity && note)
-    {
-      // scan the current chord for this note
-      // to see if it is already part of the chord      
-      noteIndexInChord = -1;
-      arpNotesHeld = 0;
-      for(i=0;i<arpChordLength;++i)
-      {        
-        if(ARP_GET_NOTE(arpChord[i])== note)
-          noteIndexInChord = i;
-        if(arpChord[i] & ARP_NOTE_HELD)
-          arpNotesHeld++;
       }
-
-      // is the note already part of the current chord?
-      if(noteIndexInChord >= 0 && arpNotesHeld)
+      else
       {
-        // Mark the key as held. There is no change to the arpeggio
-        if(!(arpChord[noteIndexInChord] & ARP_NOTE_HELD))
+        // scan the current chord for this note
+        // to see if it is already part of the chord      
+        noteIndexInChord = -1;
+        arpNotesHeld = 0;
+        for(i=0;i<arpChordLength;++i)
         {        
-          arpChord[noteIndexInChord] |= ARP_NOTE_HELD;
-          arpNotesHeld++;
+          if(ARP_GET_NOTE(arpChord[i])== note)
+            noteIndexInChord = i;
+          if(arpChord[i] & ARP_NOTE_HELD)
+            arpNotesHeld++;
         }
-      }
-      else 
-      {
-        // if its the first note of a new chord then
-        // we need to restart play
-        if(!arpNotesHeld)
+  
+        // is the note already part of the current chord?
+        if(noteIndexInChord >= 0 && arpNotesHeld)
         {
-          arpChordLength = 0;
-          if(!!(uiHoldType & UI_HOLD_CHORD))
-            synchFlags |= SYNCH_RESTART_ON_BEAT; // wait till next beat before restarting
-          else
-            synchRestartSequence();
+          // Mark the key as held. There is no change to the arpeggio
+          if(!(arpChord[noteIndexInChord] & ARP_NOTE_HELD))
+          {        
+            arpChord[noteIndexInChord] |= ARP_NOTE_HELD;
+            arpNotesHeld++;
+          }
         }
-
-        // insert the new note into the chord                   
-        if(arpChordLength < ARP_MAX_CHORD-1)
-        {        
-          arpChord[arpChordLength] = ARP_MAKE_NOTE(note,velocity);
-          arpChord[arpChordLength] |= ARP_NOTE_HELD;
-          arpChordLength++;
-          arpNotesHeld++;
-
-          // flag that the arp sequence needs to be rebuilt
-          arpRebuild = 1;          
-        }  
+        else 
+        {
+          // if its the first note of a new chord then
+          // we need to restart play
+          if(!arpNotesHeld)
+          {
+            arpChordLength = 0;
+            if(!!(uiHoldType & UI_HOLD_CHORD))
+              synchFlags |= SYNCH_RESTART_ON_BEAT; // wait till next beat before restarting
+            else
+              synchRestartSequence();
+          }
+  
+          // insert the new note into the chord                   
+          if(arpChordLength < ARP_MAX_CHORD-1)
+          {        
+            arpChord[arpChordLength] = ARP_MAKE_NOTE(note,velocity);
+            arpChord[arpChordLength] |= ARP_NOTE_HELD;
+            arpChordLength++;
+            arpNotesHeld++;
+  
+            // flag that the arp sequence needs to be rebuilt
+            arpRebuild = 1;          
+          }  
+        }
       }
     }
     // NOTE OFF MESSAGE
@@ -2451,7 +2458,7 @@ void editForceToScaleType(char keyPress, byte forceRefresh)
   {
     uiClearLeds();
     uiSetLeds(0, 8, uiLedDim);
-    uiSetLeds(11, 4, uiLedDim);
+    uiSetLeds(11, 5, uiLedDim);
     uiLeds[0] = uiLedMedium;
     uiLeds[14] = uiLedMedium;
     switch(arpForceToScaleMask & ARP_SCALE_CHROMATIC)

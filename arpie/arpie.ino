@@ -56,6 +56,9 @@ enum {
 // The preferences word
 unsigned int gPreferences;
 
+// Forward declare the UI refresh flag
+extern byte editForceRefresh;
+
 ////////////////////////////////////////////////////////////////////////////////
 //
 //
@@ -1116,6 +1119,7 @@ unsigned int arpForceToScaleMask;   // Force to scale interval mask (defines the
 unsigned int arpChord[ARP_MAX_CHORD];
 int arpChordLength;        // number of notes in the chord
 int arpNotesHeld;          // number of notes physically held
+char arpChordRootNote;
 
 // ARPEGGIO SEQUENCE - the arpeggio build from chord/inserts etc
 unsigned int arpSequence[ARP_MAX_SEQUENCE];
@@ -1163,6 +1167,7 @@ void arpInit()
   arpTranspose = 0;
   arpForceToScaleRoot=0;
   arpForceToScaleMask=ARP_SCALE_CHROMATIC|ARP_SCALE_ADJUST_SHARP;
+  arpChordRootNote = -1;
   
   // the pattern starts with all beats on
   for(int i=0;i<16;++i)
@@ -1178,18 +1183,24 @@ void arpClear()
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// COPY CHORD
-void arpCopyChord(int *dest)
+// COPY CHORD - RETURN LOWEST NOTE
+char arpCopyChord(int *dest)
 {
+  char m =-1;
   int i;
   for(i=0; i<arpChordLength; ++i)
+  {
     dest[i] = arpChord[i];
+    if(m == -1 || arpChord[i] < m)
+      m = arpChord[i];
+  }
+  return m;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
-// SORT NOTES OF CHORD
+// SORT NOTES OF CHORD - RETURN LOWEST NOTE
 // Crappy bubblesort.. but there are not too many notes
-void arpSortChord(int *dest)
+char arpSortChord(int *dest)
 {
   arpCopyChord(dest);
   byte sorted = 0;
@@ -1207,6 +1218,7 @@ void arpSortChord(int *dest)
       }
     }
   }
+ return arpChord[0];
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1241,8 +1253,9 @@ void arpRandomizeChord(int *dest)
 ////////////////////////////////////////////////////////////////////////////////
 // BUILD A NEW SEQUENCE
 void arpBuildSequence()
-{
+{  
   // sequence is empty if no chord notes present
+  arpChordRootNote=-1;
   arpSequenceLength=0;
   if(!arpChordLength)
     return;
@@ -1250,9 +1263,9 @@ void arpBuildSequence()
   // sort the chord info if needed
   int chord[ARP_MAX_CHORD];
   if(arpType == ARP_TYPE_UP || arpType == ARP_TYPE_DOWN || arpType == ARP_TYPE_UP_DOWN)
-    arpSortChord(chord);
+    arpChordRootNote = arpSortChord(chord);
   else
-    arpCopyChord(chord);
+    arpChordRootNote = arpCopyChord(chord);
 
   int tempSequence[ARP_MAX_SEQUENCE];
   int tempSequenceLength = 0;        
@@ -1479,7 +1492,7 @@ void arpBuildSequence()
         i++;
     }
     break;
-  }
+  } 
 }  
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1494,10 +1507,24 @@ void arpReadInput(unsigned long milliseconds)
   {
     // read the MIDI port
     byte msg = midiRead(milliseconds, 0);      
-    if(!msg || !!(uiHoldType & UI_HOLD_LOCKED))
-      break;
+    if(!msg)
+      break;      
+      
     byte note = midiParams[0];
     byte velocity = midiParams[1];
+    if(!!(uiHoldType & UI_HOLD_LOCKED))
+    {
+       if(!!(gPreferences & PREF_MIDITRANSPOSE))
+       {
+         if(velocity && arpChordRootNote != -1)
+         {
+            arpTranspose = note - arpChordRootNote;                        
+            arpRebuild = 1;           
+            editForceRefresh = 1;
+         }
+       }
+       break;
+    }
 
     // NOTE ON MESSAGE
     if(MIDI_IS_NOTE_ON(msg) && velocity && note)
@@ -1807,7 +1834,7 @@ unsigned long editRevertTime;
 // track when a menu button is held for a long period of time
 unsigned long editLongHoldTime;
 byte editPressType;
-
+byte editForceRefresh;
 unsigned long editTapTempoTime;
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1816,7 +1843,8 @@ void editInit()
 {
   editMode = EDIT_MODE_PATTERN;
   editPressType = EDIT_NO_PRESS;
-  editRevertTime = 1;  // force a display refresh on startup
+  editForceRefresh = 1;  // force a display refresh on startup
+  editRevertTime = 0;
   editLongHoldTime = 0;
   editTapTempoTime = 0;
 }
@@ -2387,7 +2415,8 @@ void editTranspose(char keyPress, byte forceRefresh)
     uiClearLeds();
     uiSetLeds(0, 16, uiLedDim);
     uiLeds[3] = uiLedMedium;
-    uiLeds[arpTranspose + 3] = uiLedBright;
+    if(arpTranspose >= -3 && arpTranspose < 13)
+      uiLeds[arpTranspose + 3] = uiLedBright;
   }
 }
 
@@ -2477,7 +2506,8 @@ void editForceToScaleRoot(char keyPress, byte forceRefresh)
 // EDIT RUN
 void editRun(unsigned long milliseconds)
 {
-  byte forceRefresh = 0;
+  byte forceRefresh = editForceRefresh;
+  editForceRefresh = 0;
 
   // Capture any key pressed on the data entry keypad
   char dataKeyPress = uiDataKey;
@@ -2702,6 +2732,7 @@ void setup() {
     
     uiSetLeds(0, 16, uiLedBright);
     delay(1000);
+    editForceRefresh = 1;
   }  
 }
 

@@ -17,9 +17,10 @@
 //    1.03  12May13  Fix issue with synch thru/change lockout blink rate
 //    1.04  09Nov13  Support MIDI stop/continue on external synch
 //    1.05  16May14  Force to scale options
+//    1.06 
 //
 #define VERSION_HI  1
-#define VERSION_LO  5
+#define VERSION_LO  6
 
 //
 // INCLUDE FILES
@@ -27,6 +28,33 @@
 #include <avr/interrupt.h>  
 #include <avr/io.h>
 #include <EEPROM.h>
+
+//
+// PREFERENCES WORD
+//
+enum {
+                                   //0123456789012345
+  PREF_MIDITRANSPOSE=(unsigned int)0b1000000000000000,
+
+  PREF_AUTOREVERT=   (unsigned int)0b0000000000010000,
+
+  PREF_LONGPRESS=    (unsigned int)0b0000000000001100, //Mask
+  PREF_LONGPRESS0=   (unsigned int)0b0000000000000000, //Shortest
+  PREF_LONGPRESS1=   (unsigned int)0b0000000000000100, //:
+  PREF_LONGPRESS2=   (unsigned int)0b0000000000001000, //:
+  PREF_LONGPRESS3=   (unsigned int)0b0000000000001100, //Longest
+  
+  PREF_LEDPROFILE =  (unsigned int)0b0000000000000011,  // Mask
+  PREF_LEDPROFILE0 = (unsigned int)0b0000000000000000,  // STD GREEN
+  PREF_LEDPROFILE1 = (unsigned int)0b0000000000000001,  // STD BLUE
+  PREF_LEDPROFILE2 = (unsigned int)0b0000000000000010,  // SUPER BRIGHT BLUE
+  PREF_LEDPROFILE3 = (unsigned int)0b0000000000000011   // SUPER BRIGHT WHITE
+};
+
+#define PREF_MASK    (unsigned int)0b1000000000011111 // Which bits of the prefs register are mapped to actual prefs
+
+// The preferences word
+unsigned int gPreferences;
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -64,12 +92,34 @@
 #define DEBOUNCE_COUNT 50
 
 // Time in ms that counts as a long button press
-#define UI_LONG_HOLD_TIME 1500
+enum 
+{
+  UI_HOLD_TIME_0 = 250,
+  UI_HOLD_TIME_1 = 500,
+  UI_HOLD_TIME_2 = 1000,
+  UI_HOLD_TIME_3 = 1500
+};
+unsigned int uiLongHoldTime;
 
-#define LED_BRIGHT 255
-#define LED_MEDIUM 25
-#define LED_DIM 1
-#define LED_OFF 0
+// Brightness levels of LEDs
+enum 
+{
+  UI_LEDPROFILE0_HI   = 100,
+  UI_LEDPROFILE0_MED  = 3,
+  UI_LEDPROFILE0_LO   = 1,
+  UI_LEDPROFILE1_HI   = 255,
+  UI_LEDPROFILE1_MED  = 3,
+  UI_LEDPROFILE1_LO   = 1,
+  UI_LEDPROFILE2_HI   = 255,
+  UI_LEDPROFILE2_MED  = 25,
+  UI_LEDPROFILE2_LO   = 4,
+  UI_LEDPROFILE3_HI   = 255,
+  UI_LEDPROFILE3_MED  = 35,
+  UI_LEDPROFILE3_LO   = 10
+};
+byte uiLedBright; 
+byte uiLedMedium;
+byte uiLedDim;
 
 #define UI_IN_LED_TIME     20
 #define UI_OUT_LED_TIME    20
@@ -247,7 +297,7 @@ void uiInit()
 //  digitalWrite(P_UI_HOLDSW, HIGH);
 
   for(int i=0;i<16;++i)
-    uiLeds[i] = LED_OFF;  
+    uiLeds[i] = 0;  
 
   uiDataKey = NO_VALUE;
   uiLastDataKey = NO_VALUE;
@@ -261,7 +311,11 @@ void uiInit()
   uiHoldPressedTime = 0;
   uiHoldType = 0;
   uiFlashHold = 0;
-
+  uiLongHoldTime = UI_HOLD_TIME_3;
+  uiLedBright = UI_LEDPROFILE2_HI; 
+  uiLedMedium = UI_LEDPROFILE2_MED; 
+  uiLedDim = UI_LEDPROFILE2_LO;
+  
   // start the interrupt to service the UI   
   TCCR2A = 0;
   TCCR2B = 1<<CS21 | 1<<CS20;
@@ -274,25 +328,25 @@ void uiInit()
 void uiShowVersion()
 {
   if(digitalRead(P_UI_HOLDSW) == LOW) {
-    uiLeds[0] =  !!((VERSION_HI/10)&0x8) ? LED_BRIGHT:LED_DIM;
-    uiLeds[1] =  !!((VERSION_HI/10)&0x4) ? LED_BRIGHT:LED_DIM;
-    uiLeds[2] =  !!((VERSION_HI/10)&0x2) ? LED_BRIGHT:LED_DIM;
-    uiLeds[3] =  !!((VERSION_HI/10)&0x1) ? LED_BRIGHT:LED_DIM;
+    uiLeds[0] =  !!((VERSION_HI/10)&0x8) ? uiLedBright:uiLedDim;
+    uiLeds[1] =  !!((VERSION_HI/10)&0x4) ? uiLedBright:uiLedDim;
+    uiLeds[2] =  !!((VERSION_HI/10)&0x2) ? uiLedBright:uiLedDim;
+    uiLeds[3] =  !!((VERSION_HI/10)&0x1) ? uiLedBright:uiLedDim;
 
-    uiLeds[4] =  !!((VERSION_HI%10)&0x8) ? LED_BRIGHT:LED_DIM;
-    uiLeds[5] =  !!((VERSION_HI%10)&0x4) ? LED_BRIGHT:LED_DIM;
-    uiLeds[6] =  !!((VERSION_HI%10)&0x2) ? LED_BRIGHT:LED_DIM;
-    uiLeds[7] =  !!((VERSION_HI%10)&0x1) ? LED_BRIGHT:LED_DIM;
+    uiLeds[4] =  !!((VERSION_HI%10)&0x8) ? uiLedBright:uiLedDim;
+    uiLeds[5] =  !!((VERSION_HI%10)&0x4) ? uiLedBright:uiLedDim;
+    uiLeds[6] =  !!((VERSION_HI%10)&0x2) ? uiLedBright:uiLedDim;
+    uiLeds[7] =  !!((VERSION_HI%10)&0x1) ? uiLedBright:uiLedDim;
 
-    uiLeds[8] =  !!((VERSION_LO/10)&0x8) ? LED_BRIGHT:LED_DIM;
-    uiLeds[9] =  !!((VERSION_LO/10)&0x4) ? LED_BRIGHT:LED_DIM;
-    uiLeds[10] = !!((VERSION_LO/10)&0x2) ? LED_BRIGHT:LED_DIM;
-    uiLeds[11] = !!((VERSION_LO/10)&0x1) ? LED_BRIGHT:LED_DIM;
+    uiLeds[8] =  !!((VERSION_LO/10)&0x8) ? uiLedBright:uiLedDim;
+    uiLeds[9] =  !!((VERSION_LO/10)&0x4) ? uiLedBright:uiLedDim;
+    uiLeds[10] = !!((VERSION_LO/10)&0x2) ? uiLedBright:uiLedDim;
+    uiLeds[11] = !!((VERSION_LO/10)&0x1) ? uiLedBright:uiLedDim;
 
-    uiLeds[12] = !!((VERSION_LO%10)&0x8) ? LED_BRIGHT:LED_DIM;
-    uiLeds[13] = !!((VERSION_LO%10)&0x4) ? LED_BRIGHT:LED_DIM;
-    uiLeds[14] = !!((VERSION_LO%10)&0x2) ? LED_BRIGHT:LED_DIM;
-    uiLeds[15] = !!((VERSION_LO%10)&0x1) ? LED_BRIGHT:LED_DIM;
+    uiLeds[12] = !!((VERSION_LO%10)&0x8) ? uiLedBright:uiLedDim;
+    uiLeds[13] = !!((VERSION_LO%10)&0x4) ? uiLedBright:uiLedDim;
+    uiLeds[14] = !!((VERSION_LO%10)&0x2) ? uiLedBright:uiLedDim;
+    uiLeds[15] = !!((VERSION_LO%10)&0x1) ? uiLedBright:uiLedDim;
 
     while(digitalRead(P_UI_HOLDSW) == LOW);
   }
@@ -339,6 +393,23 @@ void uiSetLeds(int start, int len, byte newStatus)
 }
 
 ////////////////////////////////////////////////////////////////////////////////
+// SET ALL LEDS FROM 16-BIT UINT
+void uiSetLeds(unsigned int enabled, unsigned int status)
+{
+  unsigned int m=0x8000;
+  for(int i=0; i<16;++i)
+  {
+    if(status & m)
+      uiLeds[i] = uiLedBright;
+    else if(enabled & m)
+      uiLeds[i] = uiLedDim;
+    else 
+      uiLeds[i] = 0;
+     m>>=1;
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
 // RUN THE UI STATE MACHINE
 void uiRun(unsigned long milliseconds)
 {
@@ -373,7 +444,7 @@ void uiRun(unsigned long milliseconds)
         uiHoldType |= UI_HOLD_PRESSED;
         uiHoldPressedTime = milliseconds;
       }
-      else if(!(uiHoldType & UI_HOLD_HELD) && (milliseconds > uiHoldPressedTime + UI_LONG_HOLD_TIME))
+      else if(!(uiHoldType & UI_HOLD_HELD) && (milliseconds > uiHoldPressedTime + uiLongHoldTime))
       {
         // record a long hold and set LOCK flag
         uiHoldType |= UI_HOLD_HELD;          
@@ -417,12 +488,16 @@ void uiRun(unsigned long milliseconds)
 ////////////////////////////////////////////////////////////////////////////////
 
 enum {
+  EEPROM_MAGIC_COOKIE = 99,
   EEPROM_INPUT_CHAN = 100,
   EEPROM_OUTPUT_CHAN,
   EEPROM_SYNCH_SOURCE,
   EEPROM_SYNCH_SEND,
-  EEPROM_MIDI_OPTS
+  EEPROM_MIDI_OPTS,
+  EEPROM_PREFS0,
+  EEPROM_PREFS1
 };
+#define EEPROM_MAGIC_COOKIE_VALUE  0x12
 
 ////////////////////////////////////////////////////////////////////////////////
 // SET A VALUE IN EEPROM
@@ -433,7 +508,7 @@ void eepromSet(byte which, byte value)
 
 ////////////////////////////////////////////////////////////////////////////////
 // GET A VALUE FROM EEPROM
-byte eepromGet(byte which, byte minValue, byte maxValue, byte defaultValue)
+byte eepromGet(byte which, byte minValue = 0x00, byte maxValue = 0xFF, byte defaultValue = 0x00)
 {
   byte value = EEPROM.read(which);
   if(value == defaultValue)
@@ -1064,6 +1139,7 @@ unsigned long arpLastPlayAdvance;
 // ARP STATUS FLAGS
 byte arpRebuild;          // whether the sequence needs to be rebuilt
 
+
 ////////////////////////////////////////////////////////////////////////////////
 // ARP INIT
 void arpInit()
@@ -1604,6 +1680,83 @@ void arpRun(unsigned long milliseconds)
 //
 //
 //
+// PREFERENCES
+//
+//
+//
+//
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////
+// LOAD USER PREFS
+void prefsInit()
+{
+  gPreferences = eepromGet(EEPROM_PREFS1); 
+  gPreferences<<=8;
+  gPreferences |= eepromGet(EEPROM_PREFS0); 
+  prefsApply();  
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// SAVE NEW PRFERENCES TO EEPROM
+void prefsSave()
+{
+  eepromSet(EEPROM_PREFS0,(gPreferences&0xFF));  
+  eepromSet(EEPROM_PREFS1,((gPreferences>>8)&0xFF));  
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// APPLY PREFERENCES BITS TO VARIABLES
+void prefsApply()
+{
+  switch(gPreferences & PREF_LEDPROFILE)
+  {
+    case PREF_LEDPROFILE0:
+      uiLedBright = UI_LEDPROFILE0_HI;
+      uiLedMedium = UI_LEDPROFILE0_MED;
+      uiLedDim    = UI_LEDPROFILE0_LO;
+      break;
+    case PREF_LEDPROFILE1:
+      uiLedBright = UI_LEDPROFILE1_HI;
+      uiLedMedium = UI_LEDPROFILE1_MED;
+      uiLedDim    = UI_LEDPROFILE1_LO;
+      break;
+    case PREF_LEDPROFILE2:
+      uiLedBright = UI_LEDPROFILE2_HI;
+      uiLedMedium = UI_LEDPROFILE2_MED;
+      uiLedDim    = UI_LEDPROFILE2_LO;
+      break;
+    case PREF_LEDPROFILE3:
+      uiLedBright = UI_LEDPROFILE3_HI;
+      uiLedMedium = UI_LEDPROFILE3_MED;
+      uiLedDim    = UI_LEDPROFILE3_LO;
+      break;
+  }
+  
+  switch(gPreferences & PREF_LONGPRESS)
+  {
+    case PREF_LONGPRESS0:
+      uiLongHoldTime = UI_HOLD_TIME_0;
+      break;
+    case PREF_LONGPRESS1:
+      uiLongHoldTime = UI_HOLD_TIME_1;
+      break;
+    case PREF_LONGPRESS2:
+      uiLongHoldTime = UI_HOLD_TIME_2;
+      break;
+    case PREF_LONGPRESS3:
+      uiLongHoldTime = UI_HOLD_TIME_3;
+      break;
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+//
+//
+//
+//
 // CONTROL SURFACE
 //
 //
@@ -1682,11 +1835,11 @@ void editPattern(char keyPress, byte forceRefresh)
   {    
     // copy the leds
     for(int i=0; i<16; ++i)
-      uiLeds[i] = arpPattern[i] ? LED_MEDIUM : LED_OFF;
+      uiLeds[i] = arpPattern[i] ? uiLedMedium : 0;
 
     // only display the play position if we have a sequence
     if(arpSequenceLength)    
-      uiLeds[arpPatternIndex] = LED_BRIGHT;
+      uiLeds[arpPatternIndex] = uiLedBright;
 
     // reset the flag
     arpRefresh = 0;
@@ -1707,8 +1860,8 @@ void editPatternLength(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {    
     uiClearLeds();
-    uiSetLeds(0, arpPatternLength, LED_DIM);
-    uiLeds[arpPatternLength-1] = LED_BRIGHT;
+    uiSetLeds(0, arpPatternLength, uiLedDim);
+    uiLeds[arpPatternLength-1] = uiLedBright;
   }
 }
 
@@ -1745,9 +1898,29 @@ void editArpType(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 5, LED_MEDIUM);
-    uiLeds[arpType] = LED_BRIGHT;
-    uiSetLeds(13, 3, LED_MEDIUM);
+    uiSetLeds(0, 5, uiLedMedium);
+    uiLeds[arpType] = uiLedBright;
+    uiSetLeds(13, 3, uiLedMedium);
+  }
+}
+
+/////////////////////////////////////////////////////
+// EDIT PREFERENCES
+void editPreferences(char keyPress, byte forceRefresh)
+{
+  int i;
+  unsigned int b = (1<<(15-keyPress));
+  if(PREF_MASK & b)
+  {
+    gPreferences^=b;
+    prefsSave();
+    prefsApply();
+    forceRefresh = 1;
+  } 
+
+  if(forceRefresh)
+  {
+    uiSetLeds(PREF_MASK, gPreferences);
   }
 }
 
@@ -1765,9 +1938,9 @@ void editOctaveShift(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 7, LED_DIM);
-    uiLeds[3] = LED_MEDIUM;
-    uiLeds[3 + arpOctaveShift] = LED_BRIGHT;
+    uiSetLeds(0, 7, uiLedDim);
+    uiLeds[3] = uiLedMedium;
+    uiLeds[3 + arpOctaveShift] = uiLedBright;
   }
 }
 
@@ -1785,8 +1958,8 @@ void editOctaveSpan(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 4, LED_DIM);
-    uiLeds[arpOctaveSpan - 1] = LED_BRIGHT;
+    uiSetLeds(0, 4, uiLedDim);
+    uiLeds[arpOctaveSpan - 1] = uiLedBright;
   }
 }
 
@@ -1820,18 +1993,18 @@ void editRate(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 13, LED_DIM);
-    uiLeds[0] = LED_MEDIUM;
-    uiLeds[2] = LED_MEDIUM;
-    uiLeds[5] = LED_MEDIUM;
-    uiLeds[8] = LED_MEDIUM;
-    uiLeds[11] = LED_MEDIUM;
-    uiLeds[13] = LED_MEDIUM;
+    uiSetLeds(0, 13, uiLedDim);
+    uiLeds[0] = uiLedMedium;
+    uiLeds[2] = uiLedMedium;
+    uiLeds[5] = uiLedMedium;
+    uiLeds[8] = uiLedMedium;
+    uiLeds[11] = uiLedMedium;
+    uiLeds[13] = uiLedMedium;
     for(int i=0; i<14; ++i)
     {
       if(synchPlayRate == rates[i]) 
       {
-        uiLeds[i] = LED_BRIGHT;
+        uiLeds[i] = uiLedBright;
         break;
       }
     }
@@ -1847,7 +2020,7 @@ void editVelocity(char keyPress, byte forceRefresh, byte override)
   if(!override)
   {
     uiClearLeds();
-    uiLeds[15] = LED_BRIGHT;
+    uiLeds[15] = uiLedBright;
   }  
   else
   {
@@ -1868,8 +2041,8 @@ void editVelocity(char keyPress, byte forceRefresh, byte override)
       int z = 0;
       if(arpVelocity > 0)
         z = (arpVelocity+1)/8 - 1;
-      uiSetLeds(0, z, LED_MEDIUM);
-      uiLeds[z] = LED_BRIGHT;
+      uiSetLeds(0, z, uiLedMedium);
+      uiLeds[z] = uiLedBright;
     }  
   }
 }
@@ -1893,13 +2066,13 @@ void editGateLength(char keyPress, byte forceRefresh)
     uiClearLeds();
     if(arpGateLength > 0)
     {
-      uiSetLeds(0, arpGateLength, LED_MEDIUM);
-      uiLeds[arpGateLength - 1] = LED_BRIGHT;
+      uiSetLeds(0, arpGateLength, uiLedMedium);
+      uiLeds[arpGateLength - 1] = uiLedBright;
     }
     else
     {
-      uiSetLeds(0, 16, LED_MEDIUM);
-      uiLeds[15] = LED_BRIGHT;
+      uiSetLeds(0, 16, uiLedMedium);
+      uiLeds[15] = uiLedBright;
     }
   }    
 }
@@ -1941,11 +2114,11 @@ void editMidiOptions(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiClearLeds();
-    uiLeds[0] = !!(midiOptions&MIDI_OPTS_SEND_CHMSG)? LED_BRIGHT : LED_DIM;
-    uiLeds[1] = !!(midiOptions&MIDI_OPTS_PASS_INPUT_NOTES)? LED_BRIGHT : LED_DIM;
-    uiLeds[2] = !!(midiOptions&MIDI_OPTS_PASS_INPUT_CHMSG)? LED_BRIGHT : LED_DIM;
-    uiLeds[3] = !!(midiOptions&MIDI_OPTS_SYNCH_INPUT)? LED_BRIGHT : LED_DIM;
-    uiLeds[4] = !!(midiOptions&MIDI_OPTS_SYNCH_AUX)? LED_BRIGHT : LED_DIM;
+    uiLeds[0] = !!(midiOptions&MIDI_OPTS_SEND_CHMSG)? uiLedBright : uiLedDim;
+    uiLeds[1] = !!(midiOptions&MIDI_OPTS_PASS_INPUT_NOTES)? uiLedBright : uiLedDim;
+    uiLeds[2] = !!(midiOptions&MIDI_OPTS_PASS_INPUT_CHMSG)? uiLedBright : uiLedDim;
+    uiLeds[3] = !!(midiOptions&MIDI_OPTS_SYNCH_INPUT)? uiLedBright : uiLedDim;
+    uiLeds[4] = !!(midiOptions&MIDI_OPTS_SYNCH_AUX)? uiLedBright : uiLedDim;
   }    
 }
 
@@ -2031,9 +2204,9 @@ void editInsertMode(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 5, LED_DIM);
-    uiLeds[arpInsertMode] = LED_BRIGHT;
-    uiSetLeds(10, 6, LED_MEDIUM);
+    uiSetLeds(0, 5, uiLedDim);
+    uiLeds[arpInsertMode] = uiLedBright;
+    uiSetLeds(10, 6, uiLedMedium);
   }
 }
 
@@ -2107,23 +2280,23 @@ void editTempoSynch(char keyPress, byte forceRefresh)
 
   if(forceRefresh)
   {
-    uiSetLeds(0,16,LED_OFF);      
+    uiSetLeds(0,16,0);      
     if(synchToMIDI)
     {
-      uiLeds[0] = LED_BRIGHT;
-      uiLeds[1] = synchSendMIDI ? LED_BRIGHT : LED_MEDIUM;                                                                                                                                                                                                                                                            
+      uiLeds[0] = uiLedBright;
+      uiLeds[1] = synchSendMIDI ? uiLedBright : uiLedMedium;                                                                                                                                                                                                                                                            
     }
     else
     {    
 #define BPM_METER(x,v) \
-      ((abs(v-x) <= 4)? LED_BRIGHT : \
-      ((abs(v-x) <= 11)? LED_MEDIUM : \
-      ((abs(v-x) <= 19)? LED_DIM : LED_OFF)))
+      ((abs(v-x) <= 4)? uiLedBright : \
+      ((abs(v-x) <= 11)? uiLedMedium : \
+      ((abs(v-x) <= 19)? uiLedDim : 0)))
 
-        uiLeds[0] = LED_MEDIUM;
-      uiLeds[1] = synchSendMIDI ? LED_BRIGHT : LED_MEDIUM;
+        uiLeds[0] = uiLedMedium;
+      uiLeds[1] = synchSendMIDI ? uiLedBright : uiLedMedium;
       if(synchBPM <= 40) 
-        uiLeds[3] = LED_DIM;
+        uiLeds[3] = uiLedDim;
       else
         uiLeds[3] = BPM_METER(synchBPM,60);      
       uiLeds[4] = BPM_METER(synchBPM,80);
@@ -2134,12 +2307,12 @@ void editTempoSynch(char keyPress, byte forceRefresh)
       uiLeds[9] = BPM_METER(synchBPM,180);
       uiLeds[10] = BPM_METER(synchBPM,200);
       if(synchBPM >= 240) 
-        uiLeds[11] = LED_DIM;
+        uiLeds[11] = uiLedDim;
       else
         uiLeds[11] = BPM_METER(synchBPM,220);
-      uiLeds[13] = LED_BRIGHT;
-      uiLeds[14] = LED_BRIGHT;
-      uiLeds[15] = LED_BRIGHT;      
+      uiLeds[13] = uiLedBright;
+      uiLeds[14] = uiLedBright;
+      uiLeds[15] = uiLedBright;      
     }
   } 
 }
@@ -2162,8 +2335,8 @@ void editMidiOutputChannel(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 16, LED_DIM);
-    uiLeds[midiSendChannel] = LED_BRIGHT;
+    uiSetLeds(0, 16, uiLedDim);
+    uiLeds[midiSendChannel] = uiLedBright;
   }
 }
 
@@ -2190,9 +2363,9 @@ void editMidiInputChannel(char keyPress, byte forceRefresh)
   {
     uiClearLeds();
     if(MIDI_OMNI == midiReceiveChannel)
-      uiSetLeds(0, 16, LED_BRIGHT);
+      uiSetLeds(0, 16, uiLedBright);
     else
-      uiLeds[midiReceiveChannel] = LED_BRIGHT;
+      uiLeds[midiReceiveChannel] = uiLedBright;
   }
 }
 
@@ -2212,9 +2385,9 @@ void editTranspose(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 16, LED_DIM);
-    uiLeds[3] = LED_MEDIUM;
-    uiLeds[arpTranspose + 3] = LED_BRIGHT;
+    uiSetLeds(0, 16, uiLedDim);
+    uiLeds[3] = uiLedMedium;
+    uiLeds[arpTranspose + 3] = uiLedBright;
   }
 }
 
@@ -2248,28 +2421,28 @@ void editForceToScaleType(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 8, LED_DIM);
-    uiSetLeds(11, 4, LED_DIM);
-    uiLeds[0] = LED_MEDIUM;
-    uiLeds[14] = LED_MEDIUM;
+    uiSetLeds(0, 8, uiLedDim);
+    uiSetLeds(11, 4, uiLedDim);
+    uiLeds[0] = uiLedMedium;
+    uiLeds[14] = uiLedMedium;
     switch(arpForceToScaleMask & ARP_SCALE_CHROMATIC)
     {
-      case ARP_SCALE_CHROMATIC:  uiLeds[0] = LED_BRIGHT; break;
-      case ARP_SCALE_IONIAN:     uiLeds[1] = LED_BRIGHT; break;
-      case ARP_SCALE_DORIAN:     uiLeds[2] = LED_BRIGHT; break;
-      case ARP_SCALE_PHRYGIAN:   uiLeds[3] = LED_BRIGHT; break;
-      case ARP_SCALE_LYDIAN:     uiLeds[4] = LED_BRIGHT; break;
-      case ARP_SCALE_MIXOLYDIAN: uiLeds[5] = LED_BRIGHT; break;
-      case ARP_SCALE_AEOLIAN:    uiLeds[6] = LED_BRIGHT; break;
-      case ARP_SCALE_LOCRIAN:    uiLeds[7] = LED_BRIGHT; break;
+      case ARP_SCALE_CHROMATIC:  uiLeds[0] = uiLedBright; break;
+      case ARP_SCALE_IONIAN:     uiLeds[1] = uiLedBright; break;
+      case ARP_SCALE_DORIAN:     uiLeds[2] = uiLedBright; break;
+      case ARP_SCALE_PHRYGIAN:   uiLeds[3] = uiLedBright; break;
+      case ARP_SCALE_LYDIAN:     uiLeds[4] = uiLedBright; break;
+      case ARP_SCALE_MIXOLYDIAN: uiLeds[5] = uiLedBright; break;
+      case ARP_SCALE_AEOLIAN:    uiLeds[6] = uiLedBright; break;
+      case ARP_SCALE_LOCRIAN:    uiLeds[7] = uiLedBright; break;
     }    
     switch(arpForceToScaleMask & ARP_SCALE_ADJUST_MASK)
     {
-      case ARP_SCALE_ADJUST_SKIP: uiLeds[11] = LED_BRIGHT; break;
-      case ARP_SCALE_ADJUST_MUTE: uiLeds[12] = LED_BRIGHT; break;
-      case ARP_SCALE_ADJUST_FLAT: uiLeds[13] = LED_BRIGHT; break;
-      case ARP_SCALE_ADJUST_SHARP: uiLeds[14] = LED_BRIGHT; break;
-      case ARP_SCALE_ADJUST_TOGGLE: uiLeds[15] = LED_BRIGHT; break;
+      case ARP_SCALE_ADJUST_SKIP: uiLeds[11] = uiLedBright; break;
+      case ARP_SCALE_ADJUST_MUTE: uiLeds[12] = uiLedBright; break;
+      case ARP_SCALE_ADJUST_FLAT: uiLeds[13] = uiLedBright; break;
+      case ARP_SCALE_ADJUST_SHARP: uiLeds[14] = uiLedBright; break;
+      case ARP_SCALE_ADJUST_TOGGLE: uiLeds[15] = uiLedBright; break;
     }    
   }
 }
@@ -2290,13 +2463,13 @@ void editForceToScaleRoot(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 12, LED_DIM);
-    uiLeds[1] = LED_MEDIUM;
-    uiLeds[3] = LED_MEDIUM;
-    uiLeds[6] = LED_MEDIUM;
-    uiLeds[8] = LED_MEDIUM;
-    uiLeds[10] = LED_MEDIUM;
-    uiLeds[arpForceToScaleRoot] = LED_BRIGHT;
+    uiSetLeds(0, 12, uiLedDim);
+    uiLeds[1] = uiLedMedium;
+    uiLeds[3] = uiLedMedium;
+    uiLeds[6] = uiLedMedium;
+    uiLeds[8] = uiLedMedium;
+    uiLeds[10] = uiLedMedium;
+    uiLeds[arpForceToScaleRoot] = uiLedBright;
   }
 }
 
@@ -2340,7 +2513,7 @@ void editRun(unsigned long milliseconds)
     // set a time at which the "long hold" event happens
     if(!editLongHoldTime)
     {
-      editLongHoldTime = milliseconds + UI_LONG_HOLD_TIME;
+      editLongHoldTime = milliseconds + uiLongHoldTime;
     }
     else if(milliseconds > editLongHoldTime)
     {
@@ -2367,9 +2540,12 @@ void editRun(unsigned long milliseconds)
   if(editRevertTime > 0 && editRevertTime < milliseconds)
   {
     // revert back to pattern edit mode
-    editMode = EDIT_MODE_PATTERN;
-    editRevertTime = 0;
+    if(gPreferences & PREF_AUTOREVERT)
+    {
+      editMode = EDIT_MODE_PATTERN;
+    }
     forceRefresh = 1;
+    editRevertTime = 0;
   }
 
   // run the current edit mode
@@ -2379,7 +2555,10 @@ void editRun(unsigned long milliseconds)
     editPatternLength(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_ARP_TYPE:
-    editArpType(dataKeyPress, forceRefresh);
+    if(EDIT_LONG_HOLD == editPressType)
+      editPreferences(dataKeyPress, forceRefresh);
+    else
+      editArpType(dataKeyPress, forceRefresh);
     break;        
   case EDIT_MODE_OCTAVE_SHIFT:
     if(EDIT_LONG_HOLD == editPressType)
@@ -2493,27 +2672,36 @@ void setup() {
   uiInit();     
   sei();  
 
+  // Load user preferences  
+  prefsInit();
+  
   // pressing hold switch at startup shows UI version
   uiShowVersion();
 
   // reset default EEPROM settings
-  if(uiMenuKey == UI_KEY_C1)
+  if(uiMenuKey == UI_KEY_C1 || (eepromGet(EEPROM_MAGIC_COOKIE) != EEPROM_MAGIC_COOKIE_VALUE))
   {
     midiSendChannel = 0;
     midiReceiveChannel = MIDI_OMNI;
     midiOptions = MIDI_OPTS_DEFAULT_VALUE;
     synchToMIDI = 0; 
     synchSendMIDI = 0; 
-
+    gPreferences = 
+      PREF_AUTOREVERT | 
+      PREF_LONGPRESS2 | 
+      PREF_LEDPROFILE2;
+  
     eepromSet(EEPROM_OUTPUT_CHAN, midiSendChannel);
     eepromSet(EEPROM_INPUT_CHAN, midiReceiveChannel);
     eepromSet(EEPROM_MIDI_OPTS, MIDI_OPTS_DEFAULT_VALUE);
     eepromSet(EEPROM_SYNCH_SOURCE,synchToMIDI);
-    eepromSet(EEPROM_SYNCH_SEND,synchSendMIDI);
-
-    uiSetLeds(0, 16, LED_BRIGHT);
-    delay(500);
-
+    eepromSet(EEPROM_SYNCH_SEND,synchSendMIDI);  
+    prefsSave();
+    prefsApply();
+    eepromSet(EEPROM_MAGIC_COOKIE,EEPROM_MAGIC_COOKIE_VALUE);  
+    
+    uiSetLeds(0, 16, uiLedBright);
+    delay(1000);
   }  
 }
 

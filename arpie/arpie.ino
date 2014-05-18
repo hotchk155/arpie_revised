@@ -33,9 +33,6 @@
 // PREFERENCES WORD
 //
 enum {
-                                   //0123456789012345
-  PREF_MIDITRANSPOSE=(unsigned int)0b1000000000000000,
-
   PREF_AUTOREVERT=   (unsigned int)0b0000000000010000,
 
   PREF_LONGPRESS=    (unsigned int)0b0000000000001100, //Mask
@@ -48,10 +45,11 @@ enum {
   PREF_LEDPROFILE0 = (unsigned int)0b0000000000000000,  // STD GREEN
   PREF_LEDPROFILE1 = (unsigned int)0b0000000000000001,  // STD BLUE
   PREF_LEDPROFILE2 = (unsigned int)0b0000000000000010,  // SUPER BRIGHT BLUE
-  PREF_LEDPROFILE3 = (unsigned int)0b0000000000000011   // SUPER BRIGHT WHITE
+  PREF_LEDPROFILE3 = (unsigned int)0b0000000000000011,  // SUPER BRIGHT WHITE
+  
+  PREF_MASK        = (unsigned int)0b0000000000011111 // Which bits of the prefs register are mapped to actual prefs
 };
 
-#define PREF_MASK    (unsigned int)0b1000000000011111 // Which bits of the prefs register are mapped to actual prefs
 
 // The preferences word
 unsigned int gPreferences;
@@ -290,7 +288,7 @@ void uiInit()
   pinMode(P_UI_READ0, INPUT);     
   pinMode(P_UI_STROBE, OUTPUT);     
 
-  pinMode(P_UI_HOLDSW, INPUT_PULLUP);
+  pinMode(P_UI_HOLDSW, INPUT_PULLUP); // If you get an error here, get latest Arduino IDE
   pinMode(P_UI_IN_LED, OUTPUT);
   pinMode(P_UI_OUT_LED, OUTPUT);
   pinMode(P_UI_SYNCH_LED, OUTPUT);
@@ -498,9 +496,11 @@ enum {
   EEPROM_SYNCH_SEND,
   EEPROM_MIDI_OPTS,
   EEPROM_PREFS0,
-  EEPROM_PREFS1
+  EEPROM_PREFS1,
+  EEPROM_ARPOPTIONS0,
+  EEPROM_ARPOPTIONS1
 };
-#define EEPROM_MAGIC_COOKIE_VALUE  0x12
+#define EEPROM_MAGIC_COOKIE_VALUE  0x22
 
 ////////////////////////////////////////////////////////////////////////////////
 // SET A VALUE IN EEPROM
@@ -1020,6 +1020,8 @@ void synchRun(unsigned long milliseconds)
   }
   else
   {
+    if(synchFlags & SYNCH_SEND_STOP)//Stop
+      midiSendRealTime(MIDI_SYNCH_STOP);
     synchTicksToSend = 0; // ensure no ticks will be sent
   }
   synchFlags &= ~(SYNCH_SEND_STOP|SYNCH_SEND_START|SYNCH_SEND_CONTINUE); // clear all realtime msg flags
@@ -1055,6 +1057,7 @@ void synchRun(unsigned long milliseconds)
 #define ARP_GET_VELOCITY(x) (((x)>>8)&0x7f)
 #define ARP_MAX_SEQUENCE 60
 #define ARP_NOTE_HELD 0x8000
+#define ARP_PLAY_THRU 0x8000
 
 // Values for arpType
 enum 
@@ -1063,7 +1066,8 @@ enum
   ARP_TYPE_DOWN,
   ARP_TYPE_UP_DOWN,
   ARP_TYPE_RANDOM,
-  ARP_TYPE_MANUAL
+  ARP_TYPE_MANUAL,
+  ARP_TYPE_POLYGATE
 };
 
 // Values for arpInsertMode
@@ -1124,6 +1128,7 @@ char arpChordRootNote;
 // ARPEGGIO SEQUENCE - the arpeggio build from chord/inserts etc
 unsigned int arpSequence[ARP_MAX_SEQUENCE];
 int arpSequenceLength;     // number of notes in the sequence
+int arpSequenceIndex;
 
 // NOTE PATTERN - the rythmic pattern of played/muted notes
 byte arpPattern[ARP_MAX_SEQUENCE];
@@ -1142,7 +1147,39 @@ unsigned long arpLastPlayAdvance;
 
 // ARP STATUS FLAGS
 byte arpRebuild;          // whether the sequence needs to be rebuilt
+unsigned int arpOptions;
 
+enum {
+                                    //0123456789012345
+  ARP_OPT_MIDITRANSPOSE = (unsigned)0b1000000000000000, // Hold button secondary function
+  ARP_OPT_SKIPONREST    = (unsigned)0b0010000000000000, // Whether rests are skipped or held
+  
+  ARP_OPTS_MASK         = (unsigned)0b1010000000000000
+};
+
+////////////////////////////////////////////////////////////////////////////////
+// APPLY ARP OPTIONS BITS TO VARIABLES
+void arpOptionsApply()
+{
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// LOAD ARP OPTIONS
+void arpOptionsLoad()
+{
+  arpOptions = eepromGet(EEPROM_ARPOPTIONS1); 
+  arpOptions<<=8;
+  arpOptions |= eepromGet(EEPROM_ARPOPTIONS0); 
+  arpOptionsApply();  
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// SAVE NEW PRFERENCES TO EEPROM
+void arpOptionsSave()
+{
+  eepromSet(EEPROM_ARPOPTIONS0,(arpOptions&0xFF));  
+  eepromSet(EEPROM_ARPOPTIONS1,((arpOptions>>8)&0xFF));  
+}
 
 ////////////////////////////////////////////////////////////////////////////////
 // ARP INIT
@@ -1169,6 +1206,7 @@ void arpInit()
   arpForceToScaleRoot=0;
   arpForceToScaleMask=ARP_SCALE_CHROMATIC|ARP_SCALE_ADJUST_SHARP;
   arpChordRootNote = -1;
+  arpSequenceIndex = 0;
   
   // the pattern starts with all beats on
   for(i=0;i<16;++i)
@@ -1349,6 +1387,7 @@ void arpBuildSequence()
         // fall thru
       case ARP_TYPE_UP:
       case ARP_TYPE_MANUAL:
+      case ARP_TYPE_POLYGATE:
         chordIndex = 0;
         lastChordIndex = arpChordLength - 1;
         transpose = arpTranspose + 12 * (arpOctaveShift + octaveCount);    
@@ -1489,61 +1528,71 @@ void arpBuildSequence()
   }  
 
 
-  // we have the expanded sequence for one octave... now we need to 
-  // perform any necessary note insertions
   int i, j;
   arpSequenceLength = 0;
-  switch(arpInsertMode)
+  if(arpType == ARP_TYPE_POLYGATE)
   {
-  case ARP_INSERT_OFF:
-    for(i=0; i<tempSequenceLength; ++i)
-      arpSequence[arpSequenceLength++] = tempSequence[i];
-    break;
-  case ARP_INSERT_HI:
-    for(i=0; i<tempSequenceLength && arpSequenceLength < ARP_MAX_SEQUENCE; ++i)
+      // Polyphonic gate mode, copy the notes over and flag to be 
+      // played at the same time
+      for(i=0; i<tempSequenceLength; ++i)
+        arpSequence[arpSequenceLength++] = ARP_PLAY_THRU|tempSequence[i];
+  }
+  else
+  {
+    // we have the expanded sequence for one octave... now we need to 
+    // perform any necessary note insertions
+    switch(arpInsertMode)
     {
-      if(tempSequence[i] != highestNote)
-      {
-        arpSequence[arpSequenceLength++] = highestNote;
+    case ARP_INSERT_OFF:
+      for(i=0; i<tempSequenceLength; ++i)
         arpSequence[arpSequenceLength++] = tempSequence[i];
-      }
-    }
-    break;
-  case ARP_INSERT_LOW:
-    for(i=0; i<tempSequenceLength && arpSequenceLength < ARP_MAX_SEQUENCE; ++i)
-    {
-      if(tempSequence[i] != lowestNote)
+      break;
+    case ARP_INSERT_HI:
+      for(i=0; i<tempSequenceLength && arpSequenceLength < ARP_MAX_SEQUENCE; ++i)
       {
-        arpSequence[arpSequenceLength++] = lowestNote;
-        arpSequence[arpSequenceLength++] = tempSequence[i];
+        if(tempSequence[i] != highestNote)
+        {
+          arpSequence[arpSequenceLength++] = highestNote;
+          arpSequence[arpSequenceLength++] = tempSequence[i];
+        }
       }
-    }
-    break;
-  case ARP_INSERT_3_1: // 3 steps forward and one back 012123234345456
-    i = 0;
-    j = 0;
-    while(i<tempSequenceLength && arpSequenceLength < ARP_MAX_SEQUENCE)
-    {
-      arpSequence[arpSequenceLength++] = tempSequence[i];
-      if(!(++j%3))
-        i--;
-      else
-        i++;
-    }
-    break;
-  case ARP_INSERT_4_2: // 4 steps forward and 2 back 0123123423453456
-    i = 0;
-    j = 0;
-    while(i<tempSequenceLength && arpSequenceLength < ARP_MAX_SEQUENCE)
-    {
-      arpSequence[arpSequenceLength++] = tempSequence[i];
-      if(!(++j%4))
-        i-=2;
-      else
-        i++;
-    }
-    break;
-  } 
+      break;
+    case ARP_INSERT_LOW:
+      for(i=0; i<tempSequenceLength && arpSequenceLength < ARP_MAX_SEQUENCE; ++i)
+      {
+        if(tempSequence[i] != lowestNote)
+        {
+          arpSequence[arpSequenceLength++] = lowestNote;
+          arpSequence[arpSequenceLength++] = tempSequence[i];
+        }
+      }
+      break;
+    case ARP_INSERT_3_1: // 3 steps forward and one back 012123234345456
+      i = 0;
+      j = 0;
+      while(i<tempSequenceLength && arpSequenceLength < ARP_MAX_SEQUENCE)
+      {
+        arpSequence[arpSequenceLength++] = tempSequence[i];
+        if(!(++j%3))
+          i--;
+        else
+          i++;
+      }
+      break;
+    case ARP_INSERT_4_2: // 4 steps forward and 2 back 0123123423453456
+      i = 0;
+      j = 0;
+      while(i<tempSequenceLength && arpSequenceLength < ARP_MAX_SEQUENCE)
+      {
+        arpSequence[arpSequenceLength++] = tempSequence[i];
+        if(!(++j%4))
+          i-=2;
+        else
+          i++;
+      }
+      break;
+    } 
+  }
 }  
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1573,7 +1622,7 @@ void arpReadInput(unsigned long milliseconds)
       if(!!(uiHoldType & UI_HOLD_LOCKED))
       {
        // transpose by MIDI?
-       if(!!(gPreferences & PREF_MIDITRANSPOSE))
+       if(!!(arpOptions & ARP_OPT_MIDITRANSPOSE))
        {
          // transpose things
          if(arpChordRootNote != -1)
@@ -1705,22 +1754,37 @@ void arpRun(unsigned long milliseconds)
   // have we updated the play position?
   if(synchPlayAdvance && arpSequenceLength && arpPatternLength)
   {                 
-    // get the index into the arpeggio sequence
-    int sequenceIndex = synchPlayIndex % arpSequenceLength;
-
-    // and the index into the pattern
+    // get the index into the pattern
     arpPatternIndex = synchPlayIndex % arpPatternLength;
-
-    // check there is a note not a rest at this 
-    // point in the pattern
-    if(arpPattern[arpPatternIndex])
+    
+    // check there is a note (not a rest at this) point in the pattern
+    if(arpPattern[arpPatternIndex] || (arpOptions & ARP_OPT_SKIPONREST))
     {
-      byte note = ARP_GET_NOTE(arpSequence[sequenceIndex]);
-      byte velocity = arpVelocityMode? arpVelocity : ARP_GET_VELOCITY(arpSequence[sequenceIndex]);        
-
-      // start the note playing
-      if(note > 0)
-        arpStartNote(note, velocity, milliseconds, noteSet);
+      // Keep the sequence index within range      
+      if(arpSequenceIndex >= arpSequenceLength)
+        arpSequenceIndex = 0;
+      
+      // Loop to action play-through flag
+      byte playThru;
+      do {
+        
+        // check play thru flag
+        playThru = !!(arpSequence[arpSequenceIndex] & ARP_PLAY_THRU);
+        
+        // Play the note if applicable
+        if(arpPattern[arpPatternIndex])
+        {
+          byte note = ARP_GET_NOTE(arpSequence[arpSequenceIndex]);
+          byte velocity = arpVelocityMode? arpVelocity : ARP_GET_VELOCITY(arpSequence[arpSequenceIndex]);        
+    
+          // start the note playing
+          if(note > 0)
+            arpStartNote(note, velocity, milliseconds, noteSet);
+        }
+        
+        // next note
+        ++arpSequenceIndex;
+      } while(playThru && arpSequenceIndex < arpSequenceLength);
 
       // if the previous note is still playing then stop it
       // (should be the case only for "tie" mode)
@@ -1959,6 +2023,7 @@ void editArpType(char keyPress, byte forceRefresh)
   case 2:  
   case 3: 
   case 4:
+  case 5:
     arpType = keyPress;
     arpRebuild = 1;
     forceRefresh = 1;
@@ -1980,9 +2045,29 @@ void editArpType(char keyPress, byte forceRefresh)
   if(forceRefresh)
   {
     uiClearLeds();
-    uiSetLeds(0, 5, uiLedMedium);
+    uiSetLeds(0, 6, uiLedMedium);
     uiLeds[arpType] = uiLedBright;
     uiSetLeds(13, 3, uiLedMedium);
+  }
+}
+
+/////////////////////////////////////////////////////
+// EDIT ARP OPTIONS
+void editArpOptions(char keyPress, byte forceRefresh)
+{
+  int i;
+  unsigned int b = (1<<(15-keyPress));
+  if(ARP_OPTS_MASK & b)
+  {
+    arpOptions^=b;
+    arpOptionsSave();
+    arpOptionsApply();
+    forceRefresh = 1;
+  } 
+
+  if(forceRefresh)
+  {
+    uiSetLeds(ARP_OPTS_MASK, arpOptions);
   }
 }
 
@@ -2633,11 +2718,14 @@ void editRun(unsigned long milliseconds)
   switch(editMode)
   {
   case EDIT_MODE_PATTERN_LENGTH:
-    editPatternLength(dataKeyPress, forceRefresh);
+    if(EDIT_LONG_HOLD == editPressType)
+      editPreferences(dataKeyPress, forceRefresh);
+    else
+      editPatternLength(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_ARP_TYPE:
     if(EDIT_LONG_HOLD == editPressType)
-      editPreferences(dataKeyPress, forceRefresh);
+      editArpOptions(dataKeyPress, forceRefresh);
     else
       editArpType(dataKeyPress, forceRefresh);
     break;        
@@ -2771,6 +2859,8 @@ void setup() {
       PREF_AUTOREVERT | 
       PREF_LONGPRESS2 | 
       PREF_LEDPROFILE2;
+    arpOptions = 
+      ARP_OPT_SKIPONREST;
   
     eepromSet(EEPROM_OUTPUT_CHAN, midiSendChannel);
     eepromSet(EEPROM_INPUT_CHAN, midiReceiveChannel);
@@ -2779,6 +2869,8 @@ void setup() {
     eepromSet(EEPROM_SYNCH_SEND,synchSendMIDI);  
     prefsSave();
     prefsApply();
+    arpOptionsSave();
+    arpOptionsApply();
     eepromSet(EEPROM_MAGIC_COOKIE,EEPROM_MAGIC_COOKIE_VALUE);  
     
     uiSetLeds(0, 16, uiLedBright);

@@ -17,7 +17,7 @@
 //    1.03  12May13  Fix issue with synch thru/change lockout blink rate
 //    1.04  09Nov13  Support MIDI stop/continue on external synch
 //    1.05  16May14  Force to scale options
-//    1.06  
+//    1.06  19May14  Poly Gate/MIDI transpose/Skip on rest
 //
 #define VERSION_HI  1
 #define VERSION_LO  6
@@ -1207,6 +1207,7 @@ void arpInit()
   arpForceToScaleMask=ARP_SCALE_CHROMATIC|ARP_SCALE_ADJUST_SHARP;
   arpChordRootNote = -1;
   arpSequenceIndex = 0;
+  arpOptionsLoad();
   
   // the pattern starts with all beats on
   for(i=0;i<16;++i)

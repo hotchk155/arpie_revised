@@ -18,9 +18,10 @@
 //    1.04  09Nov13  Support MIDI stop/continue on external synch
 //    1.05  16May14  Force to scale options
 //    1.06  19May14  Poly Gate/MIDI transpose/Skip on rest
+//    1.07A
 //
 #define VERSION_HI  1
-#define VERSION_LO  6
+#define VERSION_LO  7
 
 //
 // INCLUDE FILES
@@ -1058,6 +1059,8 @@ void synchRun(unsigned long milliseconds)
 #define ARP_MAX_SEQUENCE 60
 #define ARP_NOTE_HELD 0x8000
 #define ARP_PLAY_THRU 0x8000
+#define ARP_PATN_PLAY  0x01
+#define ARP_PATN_EXT   0x02
 
 // Values for arpType
 enum 
@@ -1151,10 +1154,9 @@ unsigned int arpOptions;
 
 enum {
                                     //0123456789012345
-  ARP_OPT_MIDITRANSPOSE = (unsigned)0b1000000000000000, // Hold button secondary function
-  ARP_OPT_SKIPONREST    = (unsigned)0b0010000000000000, // Whether rests are skipped or held
-  
-  ARP_OPTS_MASK         = (unsigned)0b1010000000000000
+  ARP_OPT_MIDITRANSPOSE   = (unsigned)0b1000000000000000, // Hold button secondary function
+  ARP_OPT_SKIPONREST      = (unsigned)0b0010000000000000, // Whether rests are skipped or held
+  ARP_OPTS_MASK           = (unsigned)0b1011000000000000
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1211,7 +1213,7 @@ void arpInit()
   
   // the pattern starts with all beats on
   for(i=0;i<16;++i)
-    arpPattern[i] = 1;
+    arpPattern[i] = ARP_PATN_PLAY;
 
   // no notes playing
   for(i=0;i<16;++i)
@@ -1757,10 +1759,14 @@ void arpRun(unsigned long milliseconds)
   {                 
     // get the index into the pattern
     arpPatternIndex = synchPlayIndex % arpPatternLength;
+    byte glide = 0;
     
     // check there is a note (not a rest at this) point in the pattern
-    if(arpPattern[arpPatternIndex] || (arpOptions & ARP_OPT_SKIPONREST))
+    if((arpPattern[arpPatternIndex] & ARP_PATN_PLAY) || (arpOptions & ARP_OPT_SKIPONREST))
     {
+      if(arpPattern[arpPatternIndex] & ARP_PATN_EXT)
+        glide = 1;
+        
       // Keep the sequence index within range      
       if(arpSequenceIndex >= arpSequenceLength)
         arpSequenceIndex = 0;
@@ -1773,7 +1779,7 @@ void arpRun(unsigned long milliseconds)
         playThru = !!(arpSequence[arpSequenceIndex] & ARP_PLAY_THRU);
         
         // Play the note if applicable
-        if(arpPattern[arpPatternIndex])
+        if(arpPattern[arpPatternIndex] & ARP_PATN_PLAY)
         {
           byte note = ARP_GET_NOTE(arpSequence[arpSequenceIndex]);
           byte velocity = arpVelocityMode? arpVelocity : ARP_GET_VELOCITY(arpSequence[arpSequenceIndex]);        
@@ -1792,7 +1798,7 @@ void arpRun(unsigned long milliseconds)
       arpStopNotes(milliseconds, noteSet);
 
       // need to work out the gate length for this note
-      if(arpGateLength)
+      if(arpGateLength && !glide)
       {              
         // Set the stop period to occur after a certain
         arpStopNoteTime = milliseconds + (synchStepPeriod * arpGateLength) / 15;
@@ -1941,7 +1947,8 @@ enum {
   EDIT_NO_PRESS = 0,
   EDIT_PRESS,        // button pressed
   EDIT_LONG_PRESS,   // button held for long hold threshold
-  EDIT_LONG_HOLD     // button held for more than long hold threshold
+  EDIT_LONG_HOLD,    // button held for more than long hold threshold
+  EDIT_LONG_RELEASED // was a long hold, now released
 };
 
 // current editing mode
@@ -1974,7 +1981,7 @@ void editPattern(char keyPress, byte forceRefresh)
 {
   if(keyPress != NO_VALUE)
   {
-    arpPattern[keyPress] = !arpPattern[keyPress];
+    arpPattern[keyPress] = (arpPattern[keyPress] ^ ARP_PATN_PLAY);
     forceRefresh = 1;
   }
 
@@ -1982,7 +1989,32 @@ void editPattern(char keyPress, byte forceRefresh)
   {    
     // copy the leds
     for(int i=0; i<16; ++i)
-      uiLeds[i] = arpPattern[i] ? uiLedMedium : 0;
+      uiLeds[i] = (arpPattern[i] & ARP_PATN_PLAY) ? uiLedMedium : 0;
+
+    // only display the play position if we have a sequence
+    if(arpSequenceLength)    
+      uiLeds[arpPatternIndex] = uiLedBright;
+
+    // reset the flag
+    arpRefresh = 0;
+  }
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// EDIT PATTERN EXTENDED
+void editPatternExt(char keyPress, byte forceRefresh)
+{
+  if(keyPress != NO_VALUE)
+  {
+    arpPattern[keyPress] = (arpPattern[keyPress] ^ ARP_PATN_EXT);
+    forceRefresh = 1;
+  }
+
+  if(forceRefresh || arpRefresh)
+  {    
+    // copy the leds
+    for(int i=0; i<16; ++i)
+      uiLeds[i] = (arpPattern[i] & ARP_PATN_EXT) ? uiLedMedium : 0;
 
     // only display the play position if we have a sequence
     if(arpSequenceLength)    
@@ -2031,14 +2063,14 @@ void editArpType(char keyPress, byte forceRefresh)
     break;
   case 13: 
     arpPatternLength = 8+random(8);
-    for(i = 0;i<16;++i) arpPattern[i] = random(2);
+    for(i = 0;i<16;++i) arpPattern[i] = random(2)? ARP_PATN_PLAY:0;
     break;
   case 14:
     for(i = 0;i<16;++i) arpPattern[i] = 0;
     arpPatternLength = 16;
     break;
   case 15:
-    for(i = 0;i<16;++i) arpPattern[i] = 1;
+    for(i = 0;i<16;++i) arpPattern[i] = ARP_PATN_PLAY;
     arpPatternLength = 16;
     break;
   } 
@@ -2658,11 +2690,17 @@ void editRun(unsigned long milliseconds)
 
   // Capture any key pressed on the data entry keypad  
   char menuKeyPress = uiMenuKey;
-  if(menuKeyPress != NO_VALUE)
+  if(NO_VALUE == menuKeyPress)
   {
-
+    // There is no key pressed, but previously we had a long hold
+    // so we remain "locked" until a key is pressed
+    if(EDIT_LONG_HOLD == editPressType)
+      editPressType = EDIT_LONG_RELEASED;
+  }
+  else
+  {
     uiMenuKey = NO_VALUE;
-    if(menuKeyPress != editMode)
+    if(menuKeyPress != editMode || EDIT_LONG_RELEASED == editPressType)
     {
       // change to a new edit mode, so 
       // screen needs to be refreshed
@@ -2718,26 +2756,32 @@ void editRun(unsigned long milliseconds)
   // run the current edit mode
   switch(editMode)
   {
+  case EDIT_MODE_PATTERN:
+    if(editPressType >= EDIT_LONG_HOLD)
+      editPatternExt(dataKeyPress, forceRefresh);
+    else
+      editPattern(dataKeyPress, forceRefresh);
+    break;    
   case EDIT_MODE_PATTERN_LENGTH:
-    if(EDIT_LONG_HOLD == editPressType)
+    if(editPressType >= EDIT_LONG_HOLD)
       editPreferences(dataKeyPress, forceRefresh);
     else
       editPatternLength(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_ARP_TYPE:
-    if(EDIT_LONG_HOLD == editPressType)
+    if(editPressType >= EDIT_LONG_HOLD)
       editArpOptions(dataKeyPress, forceRefresh);
     else
       editArpType(dataKeyPress, forceRefresh);
     break;        
   case EDIT_MODE_OCTAVE_SHIFT:
-    if(EDIT_LONG_HOLD == editPressType)
+    if(editPressType >= EDIT_LONG_HOLD)
       editForceToScaleRoot(dataKeyPress, forceRefresh);
     else
       editOctaveShift(dataKeyPress, forceRefresh);
     break;
   case EDIT_MODE_OCTAVE_SPAN:
-    if(EDIT_LONG_HOLD == editPressType)
+    if(editPressType >= EDIT_LONG_HOLD)
       editForceToScaleType(dataKeyPress, forceRefresh);
     else
       editOctaveSpan(dataKeyPress, forceRefresh);
@@ -2746,7 +2790,7 @@ void editRun(unsigned long milliseconds)
     editRate(dataKeyPress, forceRefresh);
     break;
   case EDIT_MODE_VELOCITY:
-    if(EDIT_LONG_PRESS == editPressType) {
+    if(editPressType >= EDIT_LONG_PRESS) {
       arpVelocityMode = !arpVelocityMode;
       forceRefresh = 1;
     }
@@ -2756,7 +2800,7 @@ void editRun(unsigned long milliseconds)
     editGateLength(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_INSERT:
-    if(EDIT_LONG_PRESS == editPressType)
+    if(editPressType == EDIT_LONG_PRESS)
     {
       arpClear();
       midiPanic();
@@ -2765,13 +2809,13 @@ void editRun(unsigned long milliseconds)
       editInsertMode(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_TEMPO_SYNCH:
-    if(EDIT_LONG_HOLD == editPressType)
+    if(editPressType >= EDIT_LONG_HOLD)
       editMidiOptions(dataKeyPress, forceRefresh);
     else
       editTempoSynch(dataKeyPress, forceRefresh);
     break;    
   case EDIT_MODE_CHANNEL:
-    if(EDIT_LONG_HOLD == editPressType)
+    if(editPressType >= EDIT_LONG_HOLD)
       editMidiInputChannel(dataKeyPress, forceRefresh);
     else
       editMidiOutputChannel(dataKeyPress, forceRefresh);
@@ -2779,7 +2823,6 @@ void editRun(unsigned long milliseconds)
   case EDIT_MODE_TRANSPOSE:
     editTranspose(dataKeyPress, forceRefresh);
     break;        
-  case EDIT_MODE_PATTERN:
   default:
     editPattern(dataKeyPress, forceRefresh);
     break;   

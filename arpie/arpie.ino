@@ -18,7 +18,7 @@
 //    1.04  09Nov13  Support MIDI stop/continue on external synch
 //    1.05  16May14  Force to scale options
 //    1.06  19May14  Poly Gate/MIDI transpose/Skip on rest
-//    1.07A
+//    1.07A revert to primary menu function, glide mode
 //
 #define VERSION_HI  1
 #define VERSION_LO  7
@@ -1060,7 +1060,8 @@ void synchRun(unsigned long milliseconds)
 #define ARP_NOTE_HELD 0x8000
 #define ARP_PLAY_THRU 0x8000
 #define ARP_PATN_PLAY  0x01
-#define ARP_PATN_EXT   0x02
+#define ARP_PATN_GLIDE 0x02
+#define ARP_PATN_ACCENT 0x04
 
 // Values for arpType
 enum 
@@ -1156,7 +1157,9 @@ enum {
                                     //0123456789012345
   ARP_OPT_MIDITRANSPOSE   = (unsigned)0b1000000000000000, // Hold button secondary function
   ARP_OPT_SKIPONREST      = (unsigned)0b0010000000000000, // Whether rests are skipped or held
-  ARP_OPTS_MASK           = (unsigned)0b1011000000000000
+  ARP_OPT_PATNMODE2       = (unsigned)0b0001000000000000, // PATN extended mode (0=glide 1=accent)
+  ARP_OPT_GLIDEMODE       = (unsigned)0b0000100000000000, // GLIDE mode (0=one step 1=till next note)
+  ARP_OPTS_MASK           = (unsigned)0b1011100000000000
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1759,12 +1762,13 @@ void arpRun(unsigned long milliseconds)
   {                 
     // get the index into the pattern
     arpPatternIndex = synchPlayIndex % arpPatternLength;
-    byte glide = 0;
     
     // check there is a note (not a rest at this) point in the pattern
     if((arpPattern[arpPatternIndex] & ARP_PATN_PLAY) || (arpOptions & ARP_OPT_SKIPONREST))
     {
-      if(arpPattern[arpPatternIndex] & ARP_PATN_EXT)
+      byte glide = 0;
+      byte newNote = 0;
+      if(arpPattern[arpPatternIndex] & ARP_PATN_GLIDE)
         glide = 1;
         
       // Keep the sequence index within range      
@@ -1782,25 +1786,50 @@ void arpRun(unsigned long milliseconds)
         if(arpPattern[arpPatternIndex] & ARP_PATN_PLAY)
         {
           byte note = ARP_GET_NOTE(arpSequence[arpSequenceIndex]);
-          byte velocity = arpVelocityMode? arpVelocity : ARP_GET_VELOCITY(arpSequence[arpSequenceIndex]);        
+          
+          // determine note velocity
+          byte velocity;          
+          if(arpPattern[arpPatternIndex] & ARP_PATN_ACCENT)
+            velocity = 127;
+          else
+            velocity = arpVelocityMode? arpVelocity : ARP_GET_VELOCITY(arpSequence[arpSequenceIndex]);        
     
           // start the note playing
           if(note > 0)
+          {
             arpStartNote(note, velocity, milliseconds, noteSet);
+            newNote = 1;
+          }
         }
         
         // next note
         ++arpSequenceIndex;
       } while(playThru && arpSequenceIndex < arpSequenceLength);
 
-      // if the previous note is still playing then stop it
-      // (should be the case only for "tie" mode)
-      arpStopNotes(milliseconds, noteSet);
+      // if the previous note is still playing when a new one is played
+      // then stop it (should be the case only for "tie" mode)
+      if(newNote)
+      {
+        arpStopNotes(milliseconds, noteSet);
+      }
 
-      // need to work out the gate length for this note
-      if(arpGateLength && !glide)
+      // check if we need to "glide"
+      if(glide)
+      {
+        if(arpOptions & ARP_OPT_GLIDEMODE) 
+        {
+          // tie          
+          arpStopNoteTime = 0;
+        }
+        else
+        {
+          // full step
+          arpStopNoteTime = milliseconds + synchStepPeriod;
+        }
+      }
+      else if(arpGateLength)
       {              
-        // Set the stop period to occur after a certain
+        // work out the gate length for this note
         arpStopNoteTime = milliseconds + (synchStepPeriod * arpGateLength) / 15;
       }
       else
@@ -2004,9 +2033,10 @@ void editPattern(char keyPress, byte forceRefresh)
 // EDIT PATTERN EXTENDED
 void editPatternExt(char keyPress, byte forceRefresh)
 {
+  byte extBit = (arpOptions & ARP_OPT_PATNMODE2)? ARP_PATN_ACCENT : ARP_PATN_GLIDE;
   if(keyPress != NO_VALUE)
   {
-    arpPattern[keyPress] = (arpPattern[keyPress] ^ ARP_PATN_EXT);
+    arpPattern[keyPress] = (arpPattern[keyPress] ^ extBit);
     forceRefresh = 1;
   }
 
@@ -2014,7 +2044,7 @@ void editPatternExt(char keyPress, byte forceRefresh)
   {    
     // copy the leds
     for(int i=0; i<16; ++i)
-      uiLeds[i] = (arpPattern[i] & ARP_PATN_EXT) ? uiLedMedium : 0;
+      uiLeds[i] = (arpPattern[i] & extBit) ? uiLedMedium : 0;
 
     // only display the play position if we have a sequence
     if(arpSequenceLength)    
@@ -2904,7 +2934,7 @@ void setup() {
       PREF_LONGPRESS2 | 
       PREF_LEDPROFILE2;
     arpOptions = 
-      ARP_OPT_SKIPONREST;
+      ARP_OPT_SKIPONREST|ARP_OPT_GLIDEMODE;
   
     eepromSet(EEPROM_OUTPUT_CHAN, midiSendChannel);
     eepromSet(EEPROM_INPUT_CHAN, midiReceiveChannel);

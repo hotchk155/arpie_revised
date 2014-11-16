@@ -1,4 +1,4 @@
- ////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
 //
 //                                  //
 //
@@ -1062,7 +1062,6 @@ void synchRun(unsigned long milliseconds)
 #define ARP_PATN_PLAY  0x01
 #define ARP_PATN_GLIDE 0x02
 #define ARP_PATN_ACCENT 0x04
-#define ARP_PATN_STACK 0x08
 
 // Values for arpType
 enum 
@@ -1158,12 +1157,9 @@ enum {
                                     //0123456789012345
   ARP_OPT_MIDITRANSPOSE   = (unsigned)0b1000000000000000, // Hold button secondary function
   ARP_OPT_SKIPONREST      = (unsigned)0b0010000000000000, // Whether rests are skipped or held
-  ARP_OPT_GLIDETIE        = (unsigned)0b0001000000000000, // GLIDE mode (0=one step 1=till next note)
-  
-  ARP_OPT_STACKEDIT       = (unsigned)0b0000000000000010, // PATN second mode - edit stack
-  ARP_OPT_ACCENTEDIT      = (unsigned)0b0000000000000001, // PATN second mode - edit accent
-  
-  ARP_OPTS_MASK           = (unsigned)0b1011000000000011
+  ARP_OPT_PATNMODE2       = (unsigned)0b0001000000000000, // PATN extended mode (0=glide 1=accent)
+  ARP_OPT_GLIDEMODE       = (unsigned)0b0000100000000000, // GLIDE mode (0=one step 1=till next note)
+  ARP_OPTS_MASK           = (unsigned)0b1011100000000000
 };
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1769,24 +1765,22 @@ void arpRun(unsigned long milliseconds)
     
     // check there is a note (not a rest at this) point in the pattern
     if((arpPattern[arpPatternIndex] & ARP_PATN_PLAY) || (arpOptions & ARP_OPT_SKIPONREST))
-    {      
+    {
       byte glide = 0;
       byte newNote = 0;
-      byte stack = !!(arpPattern[arpPatternIndex] & ARP_PATN_STACK);
       if(arpPattern[arpPatternIndex] & ARP_PATN_GLIDE)
         glide = 1;
         
       // Keep the sequence index within range      
       if(arpSequenceIndex >= arpSequenceLength)
         arpSequenceIndex = 0;
-      int sequenceIndex = arpSequenceIndex;
       
       // Loop to action play-through flag
       byte playThru;
       do {
         
         // check play thru flag
-        playThru = stack || !!(arpSequence[arpSequenceIndex] & ARP_PLAY_THRU);
+        playThru = !!(arpSequence[arpSequenceIndex] & ARP_PLAY_THRU);
         
         // Play the note if applicable
         if(arpPattern[arpPatternIndex] & ARP_PATN_PLAY)
@@ -1803,8 +1797,6 @@ void arpRun(unsigned long milliseconds)
           // start the note playing
           if(note > 0)
           {
-            if(stack && note < 115)
-              note += 12;
             arpStartNote(note, velocity, milliseconds, noteSet);
             newNote = 1;
           }
@@ -1813,9 +1805,6 @@ void arpRun(unsigned long milliseconds)
         // next note
         ++arpSequenceIndex;
       } while(playThru && arpSequenceIndex < arpSequenceLength);
-      
-      if(stack) 
-        arpSequenceIndex = sequenceIndex + 1;
 
       // if the previous note is still playing when a new one is played
       // then stop it (should be the case only for "tie" mode)
@@ -1827,7 +1816,7 @@ void arpRun(unsigned long milliseconds)
       // check if we need to "glide"
       if(glide)
       {
-        if(arpOptions & ARP_OPT_GLIDETIE) 
+        if(arpOptions & ARP_OPT_GLIDEMODE) 
         {
           // tie          
           arpStopNoteTime = 0;
@@ -2044,13 +2033,7 @@ void editPattern(char keyPress, byte forceRefresh)
 // EDIT PATTERN EXTENDED
 void editPatternExt(char keyPress, byte forceRefresh)
 {
-  // which option bit are we editing?
-  byte extBit = ARP_PATN_GLIDE;
-  if(arpOptions & ARP_OPT_STACKEDIT)
-    extBit = ARP_PATN_STACK;
-  else if(arpOptions & ARP_OPT_ACCENTEDIT)
-    extBit = ARP_PATN_ACCENT;
-    
+  byte extBit = (arpOptions & ARP_OPT_PATNMODE2)? ARP_PATN_ACCENT : ARP_PATN_GLIDE;
   if(keyPress != NO_VALUE)
   {
     arpPattern[keyPress] = (arpPattern[keyPress] ^ extBit);
@@ -2140,15 +2123,6 @@ void editArpOptions(char keyPress, byte forceRefresh)
   if(ARP_OPTS_MASK & b)
   {
     arpOptions^=b;
-    
-    if((arpOptions & (ARP_OPT_STACKEDIT|ARP_OPT_ACCENTEDIT)) 
-      == (ARP_OPT_STACKEDIT|ARP_OPT_ACCENTEDIT))
-    {
-      // makes sure accent and stack editing cannot be enabled
-      // at the same time
-      arpOptions &= ~(ARP_OPT_STACKEDIT|ARP_OPT_ACCENTEDIT);
-      arpOptions |= b;
-    }
     arpOptionsSave();
     arpOptionsApply();
     forceRefresh = 1;
@@ -2960,7 +2934,7 @@ void setup() {
       PREF_LONGPRESS2 | 
       PREF_LEDPROFILE2;
     arpOptions = 
-      ARP_OPT_SKIPONREST|ARP_OPT_GLIDETIE;
+      ARP_OPT_SKIPONREST|ARP_OPT_GLIDEMODE;
   
     eepromSet(EEPROM_OUTPUT_CHAN, midiSendChannel);
     eepromSet(EEPROM_INPUT_CHAN, midiReceiveChannel);

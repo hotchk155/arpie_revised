@@ -19,6 +19,7 @@
 //    1.05  16May14  Force to scale options
 //    1.06  19May14  Poly Gate/MIDI transpose/Skip on rest
 //    1.07A revert to primary menu function, glide mode
+//    1.07B synchtab support
 //
 #define VERSION_HI  1
 #define VERSION_LO  7
@@ -30,10 +31,42 @@
 #include <avr/io.h>
 #include <EEPROM.h>
 
+// Midi CC numbers to associate with hack header inputs
+#define HH_CC_PC5             16
+#define HH_CC_PC4             17
+#define HH_CC_PC0             18
+
+// Hack header pulse clock config
+#define HH_CLOCK_RATIO        12
+#define HH_CLOCK_PULSEWIDTH   10  
+#define HH_CLOCK_MINPERIOD    20  
+#define HH_CLOCK_ACTIVELOW    0
+
 //
 // PREFERENCES WORD
 //
 enum {
+  PREF_HACKHEADER=       (unsigned int)0b1111111100000000,
+  PREF_HH_TYPE=          (unsigned int)0b1100000000000000,  
+  PREF_HHTYPE_POTS=      (unsigned int)0b0000000000000000,
+  
+  PREF_HH_SYNCHTAB=      (unsigned int)0b1000000000000000,
+  
+  PREF_HHPOT_PC5=        (unsigned int)0b0011000000000000,
+  PREF_HHPOT_PC5_MOD=    (unsigned int)0b0001000000000000,
+  PREF_HHPOT_PC5_TRANS=  (unsigned int)0b0010000000000000,
+  PREF_HHPOT_PC5_CC=     (unsigned int)0b0011000000000000,
+
+  PREF_HHPOT_PC4=        (unsigned int)0b0000110000000000,
+  PREF_HHPOT_PC4_VEL=    (unsigned int)0b0000010000000000,
+  PREF_HHPOT_PC4_PB=     (unsigned int)0b0000100000000000,
+  PREF_HHPOT_PC4_CC=     (unsigned int)0b0000110000000000,
+
+  PREF_HHPOT_PC0=        (unsigned int)0b0000001100000000,
+  PREF_HHPOT_PC0_TEMPO=  (unsigned int)0b0000000100000000,
+  PREF_HHPOT_PC0_GATE=   (unsigned int)0b0000001000000000,
+  PREF_HHPOT_PC0_CC=     (unsigned int)0b0000001100000000,
+  
   PREF_AUTOREVERT=   (unsigned int)0b0000000000010000,
 
   PREF_LONGPRESS=    (unsigned int)0b0000000000001100, //Mask
@@ -48,7 +81,7 @@ enum {
   PREF_LEDPROFILE2 = (unsigned int)0b0000000000000010,  // SUPER BRIGHT BLUE
   PREF_LEDPROFILE3 = (unsigned int)0b0000000000000011,  // SUPER BRIGHT WHITE
   
-  PREF_MASK        = (unsigned int)0b0000000000011111 // Which bits of the prefs register are mapped to actual prefs
+  PREF_MASK        = (unsigned int)0b1111111100011111 // Which bits of the prefs register are mapped to actual prefs
 };
 
 
@@ -135,6 +168,7 @@ byte uiLedDim;
 #define SYNCH_SOURCE_INTERNAL  1
 #define SYNCH_SOURCE_INPUT     2
 #define SYNCH_SOURCE_AUX       3
+
 
 volatile byte uiLeds[16];
 volatile char uiDataKey;
@@ -564,6 +598,8 @@ byte midiOptions;
 #define MIDI_IS_NOTE_ON(msg) ((msg & 0xf0) == 0x90)
 #define MIDI_IS_NOTE_OFF(msg) ((msg & 0xf0) == 0x80)
 #define MIDI_MK_NOTE (0x90 | midiSendChannel)
+#define MIDI_MK_CTRL_CHANGE (0xB0 | midiSendChannel)
+#define MIDI_MK_PITCHBEND   (0xE0 | midiSendChannel)
 
 // realtime synch messages
 #define MIDI_SYNCH_TICK     0xf8
@@ -770,6 +806,24 @@ volatile byte synchBeat;                       // flag for flashing the SYNCH la
 volatile byte synchFlags;                  // synch events to send
 volatile char synchTicksToSend;                // ticks to send
 
+
+volatile char synchPulseClockTickCount;
+byte synchClockSendState;
+byte synchClockSendStateTimer;
+
+#define SYNCH_TICK_TO_PULSE_RATIO  HH_CLOCK_RATIO
+#define SYNCH_CLOCK_PULSE_WIDTH    HH_CLOCK_PULSEWIDTH
+#define SYNCH_CLOCK_MIN_PERIOD     HH_CLOCK_MINPERIOD
+#define SYNCH_CLOCK_INVERT         HH_CLOCK_ACTIVELOW
+
+#if HH_CLOCK_ACTIVELOW    
+  #define SYNCH_CLOCK_ON           PORTC &= ~(1<<0)
+  #define SYNCH_CLOCK_OFF          PORTC |= (1<<0)
+#else
+  #define SYNCH_CLOCK_OFF          PORTC &= ~(1<<0)
+  #define SYNCH_CLOCK_ON           PORTC |= (1<<0)
+#endif
+
 // PIN DEFS (From PIC MCU servicing MIDI SYNCH input)
 #define P_SYNCH_TICK     2
 #define P_SYNCH_RESTART  3
@@ -852,6 +906,9 @@ void synchTick(byte source)
 
   if(synchSendMIDI)
     synchTicksToSend++;
+    
+  if((gPreferences & PREF_HACKHEADER) == PREF_HH_SYNCHTAB)
+    synchPulseClockTickCount++;
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -955,10 +1012,15 @@ void synchInit()
   pinMode(P_SYNCH_RESTART, INPUT_PULLUP);
   pinMode(P_SYNCH_RUN, INPUT_PULLUP);
 
+  synchPulseClockTickCount = 0;
+  synchClockSendState = 0;
+  synchClockSendStateTimer = 0;
+
   // weak pull-ups
   //digitalWrite(P_SYNCH_TICK, HIGH);
   //digitalWrite(P_SYNCH_RESTART, HIGH);
   //digitalWrite(P_SYNCH_RUN, HIGH);
+
 
   attachInterrupt(0, synchReset_ISR, RISING);
   attachInterrupt(1, synchTick_ISR, RISING);
@@ -1017,7 +1079,7 @@ void synchRun(unsigned long milliseconds)
     {
       synchTicksToSend--;
       midiSendRealTime(MIDI_SYNCH_TICK);
-    }
+    }    
   }
   else
   {
@@ -1027,6 +1089,32 @@ void synchRun(unsigned long milliseconds)
   }
   synchFlags &= ~(SYNCH_SEND_STOP|SYNCH_SEND_START|SYNCH_SEND_CONTINUE); // clear all realtime msg flags
 
+  ///////////////////////////////////////////////////////
+  // Handling pulse clock output on PC0
+  // check a pulse output is not already in progress
+  if(!synchClockSendState)
+  {
+    // check if a new pulse is required
+    if(synchPulseClockTickCount>=SYNCH_TICK_TO_PULSE_RATIO)
+    {
+      // start a new pulse
+      SYNCH_CLOCK_ON;
+      synchPulseClockTickCount -= SYNCH_TICK_TO_PULSE_RATIO;
+      synchClockSendState = 1;
+    }
+  }
+  else if(synchClockSendStateTimer != (byte)milliseconds)
+  {
+    // pulse is in progress
+    synchClockSendStateTimer = (byte)milliseconds;
+    ++synchClockSendState;
+    if(synchClockSendState >= SYNCH_CLOCK_MIN_PERIOD)
+      synchClockSendState = 0;
+
+    if(synchClockSendState == SYNCH_CLOCK_PULSE_WIDTH)
+      SYNCH_CLOCK_OFF;
+  }
+  ///////////////////////////////////////////////////////
 
   // check if we need to report a beat
   if(synchBeat)
@@ -1118,7 +1206,7 @@ byte arpOctaveSpan;        // number of octaves to span with the arpeggio
 byte arpInsertMode;        // additional note insertion mode
 byte arpVelocityMode;      // (0 = original, 1 = override)
 byte arpVelocity;          // velocity 
-byte arpGateLength;        // gate length (0 = tie notes)
+byte arpGateLength;        // gate length (0 = tie notes, 1-127 = fraction of beat)
 char arpTranspose;         // up/down transpose
 char arpForceToScaleRoot;  // Defines the root note of the scale (0 = C)
 unsigned int arpForceToScaleMask;   // Force to scale interval mask (defines the scale)
@@ -1204,7 +1292,7 @@ void arpInit()
   arpPatternLength = 16;
   arpRefresh = 0;
   arpRebuild = 0;
-  arpGateLength = 10;
+  arpGateLength = 100;
   arpSequenceLength = 0;
   arpLastPlayAdvance = 0;
   arpTranspose = 0;
@@ -1830,7 +1918,7 @@ void arpRun(unsigned long milliseconds)
       else if(arpGateLength)
       {              
         // work out the gate length for this note
-        arpStopNoteTime = milliseconds + (synchStepPeriod * arpGateLength) / 15;
+        arpStopNoteTime = milliseconds + (synchStepPeriod * arpGateLength) / 150;
       }
       else
       {
@@ -1854,6 +1942,8 @@ void arpRun(unsigned long milliseconds)
     arpStopNoteTime = 0;
   }
 }
+
+
 
 ////////////////////////////////////////////////////////////////////////////////
 ////////////////////////////////////////////////////////////////////////////////
@@ -2283,7 +2373,7 @@ void editGateLength(char keyPress, byte forceRefresh)
 {
   if(keyPress >= 0 && keyPress <= 14)
   {    
-    arpGateLength = keyPress + 1;
+    arpGateLength = 10*(keyPress + 1);
     forceRefresh = 1;
   }
   else if(keyPress == 15)
@@ -2295,9 +2385,9 @@ void editGateLength(char keyPress, byte forceRefresh)
   {
     uiClearLeds();
     if(arpGateLength > 0)
-    {
-      uiSetLeds(0, arpGateLength, uiLedMedium);
-      uiLeds[arpGateLength - 1] = uiLedBright;
+    {      
+      uiSetLeds(0, arpGateLength/10, uiLedMedium);
+      uiLeds[arpGateLength/10 - 1] = uiLedBright;
     }
     else
     {
@@ -2860,6 +2950,183 @@ void editRun(unsigned long milliseconds)
 }    
 
 ////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+//
+//
+//
+//
+// HACK HEADER IO
+//
+//
+//
+//
+////////////////////////////////////////////////////////////////////////////////
+////////////////////////////////////////////////////////////////////////////////
+
+////////////////////////////////////////////////////////////////////////////////
+// Class to manage pot inputs
+class CPot 
+{
+  int value;
+  enum { 
+    TOLERANCE = 3,
+    UNKNOWN = -1,
+  };
+public:  
+  enum {
+    MAX_CC = 127,
+    TRANSPOSE,
+    TEMPO,
+    VELOCITY,
+    PITCHBEND,
+    GATELEN
+  };    
+  CPot() {
+    reset();
+  }
+  void reset() {
+    value = UNKNOWN;
+  }    
+  int endStops(int v)
+  {
+      if(v < TOLERANCE) 
+        return 0;
+      else if(v > 1023 - TOLERANCE) 
+        return 1023;
+      return v;
+  }
+  int centreDetent(int v)
+  {
+    const int range = 480;
+    const int top_of_low_band = range;
+    const int bottom_of_hi_band = 1023 - range;
+    if(v < top_of_low_band)
+    {
+      return 512.0 * ((float)v/range);
+    }
+    else if(v > bottom_of_hi_band) 
+    {
+      return 511 + 512.0 * (v-bottom_of_hi_band)/(float)range;
+    }
+    else 
+    {
+      return 512;
+    }
+  }
+  void run(int pin, byte controller, unsigned long milliseconds) {
+    int reading = analogRead(pin);
+    if(value == UNKNOWN) {
+      value = reading;
+    }
+    else if(abs(reading - value) > TOLERANCE) 
+    {
+      value = reading;
+      int v;
+      switch(controller) {
+        case TRANSPOSE:          
+        case TEMPO:
+        case VELOCITY:
+          break;
+        case GATELEN:
+          v = endStops(value);
+          if(1023 == v)
+            arpGateLength = 0;
+          else if(v < 10)
+            arpGateLength = 1;
+          else
+            arpGateLength = 10 + (v*150.0)/1023.0;
+          editForceRefresh = 1;
+          break;
+        case PITCHBEND:
+          v = 16 * centreDetent(value);
+          midiWrite(MIDI_MK_PITCHBEND, v&0x7F, (v>>7)&0x7F, 2, milliseconds);          
+          break;
+        default:
+          v = endStops(value);
+          if(controller > 0 && controller <= MAX_CC)
+              midiWrite(MIDI_MK_CTRL_CHANGE, controller, v>>3, 2, milliseconds);
+          break;            
+      }      
+    }
+  }   
+};
+
+// Define three pot instances
+CPot Pot1;
+CPot Pot2;
+CPot Pot3;
+
+byte hhTime;   // stores divided ms just so we can check for ticks
+
+////////////////////////////////////////////////////////////////////////////////
+// Initialise hack header manager
+void hhInit() 
+{
+  if((gPreferences & PREF_HACKHEADER) == PREF_HH_SYNCHTAB) {
+    pinMode(14,OUTPUT);
+    SYNCH_CLOCK_OFF;
+  }
+  else if((gPreferences & PREF_HH_TYPE) == PREF_HHTYPE_POTS) {
+    pinMode(14,INPUT);
+    pinMode(18,INPUT);
+    pinMode(19,INPUT);
+  }
+  Pot1.reset();
+  Pot2.reset();
+  Pot3.reset();
+  hhTime = 0;
+}
+
+////////////////////////////////////////////////////////////////////////////////
+// Run hack header manager
+void hhRun(unsigned long milliseconds)
+{    
+  // enforce a minimum period between I/O polls
+  if((byte)(milliseconds>>4) == hhTime)
+    return;
+  hhTime = (byte)(milliseconds>>4); 
+
+  if((gPreferences & PREF_HH_TYPE) == PREF_HHTYPE_POTS)
+  {
+
+      switch(gPreferences & PREF_HHPOT_PC5)
+      {
+      case PREF_HHPOT_PC5_MOD:
+         Pot1.run(5, 1, milliseconds);
+         break;
+      case PREF_HHPOT_PC5_TRANS:
+         break;
+      case PREF_HHPOT_PC5_CC:
+         Pot1.run(5, HH_CC_PC5, milliseconds);
+         break;
+      }
+      switch(gPreferences & PREF_HHPOT_PC4)
+      {
+      case PREF_HHPOT_PC4_VEL:
+      case PREF_HHPOT_PC4_PB:
+         Pot2.run(4, CPot::PITCHBEND, milliseconds);
+         break;
+         break;
+      case PREF_HHPOT_PC4_CC:
+         Pot2.run(4, HH_CC_PC4, milliseconds);
+         break;
+      }
+      switch(gPreferences & PREF_HHPOT_PC0)
+      {
+      case PREF_HHPOT_PC0_TEMPO:
+         break;
+      case PREF_HHPOT_PC0_GATE:
+         Pot3.run(0, CPot::GATELEN, milliseconds);
+         break;
+      case PREF_HHPOT_PC0_CC:
+         Pot3.run(0, HH_CC_PC0, milliseconds);
+         break;
+      }
+  }    
+}
+
+
+////////////////////////////////////////////////////////////////////////////////
 //
 //
 //
@@ -2918,6 +3185,9 @@ void setup() {
   // Load user preferences  
   prefsInit();
   
+  // init hack header
+  hhInit();
+  
   // pressing hold switch at startup shows UI version
   uiShowVersion();
 
@@ -2956,7 +3226,7 @@ void setup() {
 ////////////////////////////////////////////////////////////////////////////////
 //
 //
-// LOOP
+// LOOPu
 //
 //
 ////////////////////////////////////////////////////////////////////////////////
@@ -2969,6 +3239,7 @@ void loop()
   heartbeatRun(millseconds);
   uiRun(millseconds);
   editRun(millseconds);   
+  hhRun(millseconds);
 }
 
 //EOF

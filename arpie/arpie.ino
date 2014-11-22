@@ -3001,17 +3001,12 @@ public:
     const int top_of_low_band = range;
     const int bottom_of_hi_band = 1023 - range;
     if(v < top_of_low_band)
-    {
-      return 512.0 * ((float)v/range);
-    }
+      v = 512.0 * ((float)v/range);
     else if(v > bottom_of_hi_band) 
-    {
-      return 511 + 512.0 * (v-bottom_of_hi_band)/(float)range;
-    }
+      v = 512 + 512.0 * (v-bottom_of_hi_band)/(float)range;
     else 
-    {
-      return 512;
-    }
+      v = 512;
+     return constrain(v,0,1023);
   }
   void run(int pin, byte controller, unsigned long milliseconds) {
     int reading = analogRead(pin);
@@ -3024,8 +3019,21 @@ public:
       int v;
       switch(controller) {
         case TRANSPOSE:          
+          arpTranspose = 12 * (float)(centreDetent(value)-512.0)/511.0;
+          arpRebuild = 1;
+          editForceRefresh = 1;
+          break;
         case TEMPO:
+          v = endStops(value);
+          v = 30 + 250.0 * (v/1023.0);
+          synchSetTempo(v);
+          editForceRefresh = 1;
+          break;
         case VELOCITY:
+          v = endStops(value);
+          arpVelocity = v/8;
+          arpVelocityMode = 1;
+          editForceRefresh = 1;
           break;
         case GATELEN:
           v = endStops(value);
@@ -3095,6 +3103,7 @@ void hhRun(unsigned long milliseconds)
          Pot1.run(5, 1, milliseconds);
          break;
       case PREF_HHPOT_PC5_TRANS:
+         Pot1.run(5, CPot::TRANSPOSE, milliseconds/200);
          break;
       case PREF_HHPOT_PC5_CC:
          Pot1.run(5, HH_CC_PC5, milliseconds);
@@ -3103,9 +3112,10 @@ void hhRun(unsigned long milliseconds)
       switch(gPreferences & PREF_HHPOT_PC4)
       {
       case PREF_HHPOT_PC4_VEL:
+         Pot2.run(4, CPot::VELOCITY, milliseconds);
+         break;
       case PREF_HHPOT_PC4_PB:
          Pot2.run(4, CPot::PITCHBEND, milliseconds);
-         break;
          break;
       case PREF_HHPOT_PC4_CC:
          Pot2.run(4, HH_CC_PC4, milliseconds);
@@ -3114,6 +3124,7 @@ void hhRun(unsigned long milliseconds)
       switch(gPreferences & PREF_HHPOT_PC0)
       {
       case PREF_HHPOT_PC0_TEMPO:
+         Pot3.run(0, CPot::TEMPO, milliseconds/200);
          break;
       case PREF_HHPOT_PC0_GATE:
          Pot3.run(0, CPot::GATELEN, milliseconds);

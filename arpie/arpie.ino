@@ -37,10 +37,10 @@
 #define HH_CC_PC0             18
 
 // Hack header pulse clock config
-#define HH_CLOCK_RATIO        12
-#define HH_CLOCK_PULSEWIDTH   10  
-#define HH_CLOCK_MINPERIOD    20  
-#define HH_CLOCK_ACTIVELOW    0
+#define SYNCH_TICK_TO_PULSE_RATIO  12
+#define SYNCH_CLOCK_PULSE_WIDTH    10
+#define SYNCH_CLOCK_MIN_PERIOD     20
+#define SYNCH_CLOCK_INVERT         0
 
 //
 // PREFERENCES WORD
@@ -83,6 +83,8 @@ enum {
   
   PREF_MASK        = (unsigned int)0b1111111100011111 // Which bits of the prefs register are mapped to actual prefs
 };
+#define IS_HH_CLOCK  ((gPreferences & PREF_HACKHEADER) == PREF_HH_SYNCHTAB)
+#define IS_HH_POTS   ((gPreferences & PREF_HH_TYPE) == PREF_HHTYPE_POTS)
 
 
 // The preferences word
@@ -803,26 +805,31 @@ volatile unsigned long synchStepPeriod;          // period between steps
 
 
 volatile byte synchBeat;                       // flag for flashing the SYNCH lamp
-volatile byte synchFlags;                  // synch events to send
+volatile byte synchFlags;                      // synch events to send
 volatile char synchTicksToSend;                // ticks to send
 
 
-volatile char synchPulseClockTickCount;
-byte synchClockSendState;
-byte synchClockSendStateTimer;
+volatile char synchPulseClockTickCount;        // number of pending clock out pulses
+byte synchClockSendState;                      // ms counter for pulse width
+byte synchClockSendStateTimer;                 // used to detect change in ms
 
-#define SYNCH_TICK_TO_PULSE_RATIO  HH_CLOCK_RATIO
-#define SYNCH_CLOCK_PULSE_WIDTH    HH_CLOCK_PULSEWIDTH
-#define SYNCH_CLOCK_MIN_PERIOD     HH_CLOCK_MINPERIOD
-#define SYNCH_CLOCK_INVERT         HH_CLOCK_ACTIVELOW
+#define SYNCH_HH_EXT_CLOCK  (0xFF)             // special sendState value meaning external clock in use
 
-#if HH_CLOCK_ACTIVELOW    
-  #define SYNCH_CLOCK_ON           PORTC &= ~(1<<4)
-  #define SYNCH_CLOCK_OFF          PORTC |= (1<<4)
+// Define pins used for the hack header
+#define P_SYNCH_HH_DETECT                19
+#define P_SYNCH_HH_CLKOUT                18  
+#define P_SYNCH_HH_CLKIN                 14
+#if SYNCH_HH_CLOCK_ACTIVELOW    
+  #define SYNCH_HH_CLOCK_ON           PORTC &= ~(1<<4)
+  #define SYNCH_HH_CLOCK_OFF          PORTC |= (1<<4)
 #else
-  #define SYNCH_CLOCK_OFF          PORTC &= ~(1<<4)
-  #define SYNCH_CLOCK_ON           PORTC |= (1<<4)
+  #define SYNCH_HH_CLOCK_OFF          PORTC &= ~(1<<4)
+  #define SYNCH_HH_CLOCK_ON           PORTC |= (1<<4)
 #endif
+#define SYCH_HH_CLOCK_IN              (PINC & (1<<0))
+#define SYNCH_HH_INPUT_DETECT         (PINC & (1<<5))
+#define SYNCH_HH_ENABLE_PCINT         (PCMSK1 |= (1<<0))
+#define SYNCH_HH_DISABLE_PCINT        (PCMSK1 &= ~(1<<0))
 
 // PIN DEFS (From PIC MCU servicing MIDI SYNCH input)
 #define P_SYNCH_TICK     2
@@ -907,7 +914,7 @@ void synchTick(byte source)
   if(synchSendMIDI)
     synchTicksToSend++;
     
-  if((gPreferences & PREF_HACKHEADER) == PREF_HH_SYNCHTAB)
+  if(IS_HH_CLOCK)
     synchPulseClockTickCount++;
 }
 
@@ -976,6 +983,16 @@ ISR(synchTick_ISR)
 }
 
 //////////////////////////////////////////////////////////////////////////
+//
+// PCINT1_vect
+// Pin change interrupt on external pulse clock
+// 
+//////////////////////////////////////////////////////////////////////////
+ISR(PCINT1_vect)
+{
+}
+
+//////////////////////////////////////////////////////////////////////////
 // SET TEMPO
 void synchSetTempo(int bpm)
 {
@@ -1011,19 +1028,30 @@ void synchInit()
   pinMode(P_SYNCH_TICK, INPUT_PULLUP);
   pinMode(P_SYNCH_RESTART, INPUT_PULLUP);
   pinMode(P_SYNCH_RUN, INPUT_PULLUP);
+  attachInterrupt(0, synchReset_ISR, RISING);
+  attachInterrupt(1, synchTick_ISR, RISING);
 
   synchPulseClockTickCount = 0;
   synchClockSendState = 0;
   synchClockSendStateTimer = 0;
-
-  // weak pull-ups
-  //digitalWrite(P_SYNCH_TICK, HIGH);
-  //digitalWrite(P_SYNCH_RESTART, HIGH);
-  //digitalWrite(P_SYNCH_RUN, HIGH);
-
-
-  attachInterrupt(0, synchReset_ISR, RISING);
-  attachInterrupt(1, synchTick_ISR, RISING);
+  
+  if(IS_HH_CLOCK) {
+     pinMode(P_SYNCH_HH_CLKOUT, OUTPUT);
+     pinMode(P_SYNCH_HH_CLKIN, INPUT);
+     pinMode(P_SYNCH_HH_DETECT, INPUT_PULLUP);
+     delay(10);
+     if(SYNCH_HH_INPUT_DETECT) 
+     {    
+       synchClockSendState = SYNCH_HH_EXT_CLOCK;  // disable clock output
+       PCICR |= (1<<1);                           // enable pin change interrupt 1
+       PCMSK1 = 0;                                // initially all pins disabled for PC interrupt
+       SYNCH_HH_ENABLE_PCINT;                     // PCINT enabled on input pin 
+     }
+     else
+     {
+       SYNCH_HH_DISABLE_PCINT;                    // no pin change interrupt
+     } 
+  }
   interrupts();
 }
 
@@ -1041,8 +1069,8 @@ void synchRun(unsigned long milliseconds)
   }  
   synchFlags = auxRunning? (synchFlags|SYNCH_AUX_RUNNING) : (synchFlags&~SYNCH_AUX_RUNNING);
 
-  // are we synching to MIDI?
-  if(!synchToMIDI)
+  // check we are not synching to MIDI and do not have external pulse clock synch
+  if(!synchToMIDI && (synchClockSendState != SYNCH_HH_EXT_CLOCK))
   {      
     if(synchFlags & SYNCH_RESET_NEXT_STEP_TIME)
     {
@@ -1090,29 +1118,31 @@ void synchRun(unsigned long milliseconds)
   synchFlags &= ~(SYNCH_SEND_STOP|SYNCH_SEND_START|SYNCH_SEND_CONTINUE); // clear all realtime msg flags
 
   ///////////////////////////////////////////////////////
-  // Handling pulse clock output on PC0
-  // check a pulse output is not already in progress
-  if(!synchClockSendState)
-  {
-    // check if a new pulse is required
-    if(synchPulseClockTickCount>=SYNCH_TICK_TO_PULSE_RATIO)
+  // Handling pulse clock output 
+  if(synchClockSendState != SYNCH_HH_EXT_CLOCK) 
+  {    
+    if(!synchClockSendState)
     {
-      // start a new pulse
-      SYNCH_CLOCK_ON;
-      synchPulseClockTickCount -= SYNCH_TICK_TO_PULSE_RATIO;
-      synchClockSendState = 1;
+      // check if a new pulse is required
+      if(synchPulseClockTickCount>=SYNCH_TICK_TO_PULSE_RATIO)
+      {
+        // start a new pulse
+        SYNCH_HH_CLOCK_ON;
+        synchPulseClockTickCount -= SYNCH_TICK_TO_PULSE_RATIO;
+        synchClockSendState = 1;
+      }
     }
-  }
-  else if(synchClockSendStateTimer != (byte)milliseconds)
-  {
-    // pulse is in progress
-    synchClockSendStateTimer = (byte)milliseconds;
-    ++synchClockSendState;
-    if(synchClockSendState >= SYNCH_CLOCK_MIN_PERIOD)
-      synchClockSendState = 0;
-
-    if(synchClockSendState == SYNCH_CLOCK_PULSE_WIDTH)
-      SYNCH_CLOCK_OFF;
+    else if(synchClockSendStateTimer != (byte)milliseconds)
+    {
+      // pulse is in progress
+      synchClockSendStateTimer = (byte)milliseconds;
+      ++synchClockSendState;
+      if(synchClockSendState >= SYNCH_CLOCK_MIN_PERIOD)
+        synchClockSendState = 0;
+  
+      if(synchClockSendState == SYNCH_CLOCK_PULSE_WIDTH)
+        SYNCH_HH_CLOCK_OFF;
+    }
   }
   ///////////////////////////////////////////////////////
 
@@ -3066,44 +3096,42 @@ CPot Pot3;
 
 byte hhTime;   // stores divided ms just so we can check for ticks
 
+#define P_HH_POT_PC0 14
+#define P_HH_POT_PC4 18
+#define P_HH_POT_PC5 19
 ////////////////////////////////////////////////////////////////////////////////
 // Initialise hack header manager
 void hhInit() 
 {
-  if((gPreferences & PREF_HACKHEADER) == PREF_HH_SYNCHTAB) {
-    pinMode(18,OUTPUT);
-    SYNCH_CLOCK_OFF;
-  }
-  else if((gPreferences & PREF_HH_TYPE) == PREF_HHTYPE_POTS) {
-    pinMode(14,INPUT);
-    pinMode(18,INPUT);
-    pinMode(19,INPUT);
+/*  if(IS_HH_POTS) {
+    pinMode(P_HH_POT_PC5,INPUT);
+    pinMode(P_HH_POT_PC4,INPUT);
+    pinMode(P_HH_POT_PC0,INPUT);
   }
   Pot1.reset();
   Pot2.reset();
-  Pot3.reset();
+  Pot3.reset();*/
   hhTime = 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
 // Run hack header manager
 void hhRun(unsigned long milliseconds)
-{    
-  // enforce a minimum period between I/O polls
+{      
+  // enforce a minimum period of 16ms between I/O polls
   if((byte)(milliseconds>>4) == hhTime)
     return;
   hhTime = (byte)(milliseconds>>4); 
 
-  if((gPreferences & PREF_HH_TYPE) == PREF_HHTYPE_POTS)
+  if(IS_HH_POTS)
   {
-
       switch(gPreferences & PREF_HHPOT_PC5)
       {
       case PREF_HHPOT_PC5_MOD:
          Pot1.run(5, 1, milliseconds);
          break;
       case PREF_HHPOT_PC5_TRANS:
-         Pot1.run(5, CPot::TRANSPOSE, milliseconds/200);
+         Pot1.run(5, CPot::TRANSPOSE, milliseconds);
          break;
       case PREF_HHPOT_PC5_CC:
          Pot1.run(5, HH_CC_PC5, milliseconds);
@@ -3124,7 +3152,7 @@ void hhRun(unsigned long milliseconds)
       switch(gPreferences & PREF_HHPOT_PC0)
       {
       case PREF_HHPOT_PC0_TEMPO:
-         Pot3.run(0, CPot::TEMPO, milliseconds/200);
+         Pot3.run(0, CPot::TEMPO, milliseconds);
          break;
       case PREF_HHPOT_PC0_GATE:
          Pot3.run(0, CPot::GATELEN, milliseconds);
@@ -3135,7 +3163,6 @@ void hhRun(unsigned long milliseconds)
       }
   }    
 }
-
 
 ////////////////////////////////////////////////////////////////////////////////
 //
@@ -3181,6 +3208,9 @@ void heartbeatRun(unsigned long milliseconds)
 ////////////////////////////////////////////////////////////////////////////////
 void setup() {                
 
+  // Load user preferences  
+  prefsInit();
+  
   midiInit();
   arpInit();
   heartbeatInit();
@@ -3192,9 +3222,6 @@ void setup() {
   synchInit();
   uiInit();     
   sei();  
-
-  // Load user preferences  
-  prefsInit();
   
   // init hack header
   hhInit();
@@ -3237,20 +3264,19 @@ void setup() {
 ////////////////////////////////////////////////////////////////////////////////
 //
 //
-// LOOPu
+// LOOP
 //
 //
 ////////////////////////////////////////////////////////////////////////////////
 void loop() 
 {
-  unsigned long millseconds = millis();
-
-  synchRun(millseconds);
-  arpRun(millseconds);
-  heartbeatRun(millseconds);
-  uiRun(millseconds);
-  editRun(millseconds);   
-  hhRun(millseconds);
+  unsigned long milliseconds = millis();
+  synchRun(milliseconds);
+  arpRun(milliseconds);
+  heartbeatRun(milliseconds);
+  uiRun(milliseconds);
+  editRun(milliseconds);   
+//  hhRun(milliseconds);
 }
 
 //EOF

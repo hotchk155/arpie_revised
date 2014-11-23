@@ -803,11 +803,14 @@ volatile float synchNextInternalTick;          // internal synch next tick time
 volatile unsigned long synchLastStepTime;      // the last step time
 volatile unsigned long synchStepPeriod;          // period between steps
 
-
 volatile byte synchBeat;                       // flag for flashing the SYNCH lamp
 volatile byte synchFlags;                      // synch events to send
 volatile char synchTicksToSend;                // ticks to send
 
+
+volatile int synchThisPulseClockPeriod;         
+volatile unsigned long synchLastPulseClockTime;         
+byte synchInternalTicksSinceLastPulseClock;
 
 volatile char synchPulseClockTickCount;        // number of pending clock out pulses
 byte synchClockSendState;                      // ms counter for pulse width
@@ -849,6 +852,7 @@ byte synchClockSendStateTimer;                 // used to detect change in ms
 #define SYNCH_INPUT_RUNNING            0x10    // This flag indicates that the MIDI INPUT synch is in a running state
 #define SYNCH_RESTART_ON_BEAT          0x20    // This flag indicates that the sequence will restart at the next beat
 #define SYNCH_AUX_RUNNING              0x40    // This flag indicates that the AUX SYNCH input in a running state 
+#define SYNCH_ZERO_TICK_COUNT          0x80    // This flag indicates cause the tick count to restart (and get beat LED in synch)
 
 
 // Values for synchRate
@@ -875,7 +879,13 @@ enum
 // This could be internally generated or come from an external source
 void synchTick(byte source)
 {
-  ++synchTickCount;
+  if(synchFlags & SYNCH_ZERO_TICK_COUNT) {
+    synchFlags &= ~SYNCH_ZERO_TICK_COUNT;
+    synchTickCount = 0;
+  }
+  else {
+    ++synchTickCount;
+  }
   if(!(synchTickCount % synchPlayRate))//ready for next step?
   {
     // store step length in ms.. this will be used
@@ -990,6 +1000,15 @@ ISR(synchTick_ISR)
 //////////////////////////////////////////////////////////////////////////
 ISR(PCINT1_vect)
 {
+  if(SYCH_HH_CLOCK_IN)  // rising edge
+  {
+    unsigned long ms = millis();
+    if(synchLastPulseClockTime && synchLastPulseClockTime < ms)
+      synchThisPulseClockPeriod = ms - synchLastPulseClockTime;
+    else      
+      synchFlags |= SYNCH_ZERO_TICK_COUNT; // synch the beat LED
+    synchLastPulseClockTime = ms;
+  }
 }
 
 //////////////////////////////////////////////////////////////////////////
@@ -998,6 +1017,21 @@ void synchSetTempo(int bpm)
 {
   synchBPM = bpm;
   synchInternalTickPeriod = (float)MILLISECONDS_PER_MINUTE/(bpm * TICKS_PER_QUARTER_NOTE);
+}
+void synchSetInternalTickPeriod(float period)
+{
+  synchInternalTickPeriod = period;
+  int bpm = (float)MILLISECONDS_PER_MINUTE / (TICKS_PER_QUARTER_NOTE * period);
+  if(synchBPM != bpm)
+  {
+    synchBPM = bpm;
+    editForceRefresh = 1;
+  }
+}
+void synchResynch() 
+{
+  synchFlags |= SYNCH_RESTART_ON_BEAT;
+  synchLastPulseClockTime = 0;
 }
 
 ////////////////////////////////////////////////////////////////////////////////
@@ -1034,6 +1068,9 @@ void synchInit()
   synchPulseClockTickCount = 0;
   synchClockSendState = 0;
   synchClockSendStateTimer = 0;
+  synchLastPulseClockTime  = 0;
+  synchThisPulseClockPeriod = 0;         
+  synchInternalTicksSinceLastPulseClock = 0;
   
   if(IS_HH_CLOCK) {
      pinMode(P_SYNCH_HH_CLKOUT, OUTPUT);
@@ -1069,16 +1106,30 @@ void synchRun(unsigned long milliseconds)
   }  
   synchFlags = auxRunning? (synchFlags|SYNCH_AUX_RUNNING) : (synchFlags&~SYNCH_AUX_RUNNING);
 
-  // check we are not synching to MIDI and do not have external pulse clock synch
-  if(!synchToMIDI && (synchClockSendState != SYNCH_HH_EXT_CLOCK))
-  {      
-    if(synchFlags & SYNCH_RESET_NEXT_STEP_TIME)
+  // else check if we are using internal clock
+  if(!synchToMIDI)
+  { 
+    if(synchThisPulseClockPeriod) // have we got a clock period measurement?
+    {      
+      synchSetInternalTickPeriod((float)synchThisPulseClockPeriod / SYNCH_TICK_TO_PULSE_RATIO);  // infer bpm
+      synchThisPulseClockPeriod = 0;
+      synchNextInternalTick = milliseconds;  // tick immediately
+      synchInternalTicksSinceLastPulseClock = 0;
+    }
+    
+    if(synchClockSendState == SYNCH_HH_EXT_CLOCK && 
+      synchInternalTicksSinceLastPulseClock >= SYNCH_TICK_TO_PULSE_RATIO)
     {
+      // hold off any ticks until the next external pulse
+    }
+    else if(synchFlags & SYNCH_RESET_NEXT_STEP_TIME)
+    {      
       synchNextInternalTick = milliseconds + synchInternalTickPeriod;
     }
     // need to generate our own ticks
     else if(synchNextInternalTick < milliseconds)
     {
+      ++synchInternalTicksSinceLastPulseClock;
       synchTick(SYNCH_SOURCE_INTERNAL);
       synchNextInternalTick += synchInternalTickPeriod;
       if(synchNextInternalTick < milliseconds)
@@ -1086,6 +1137,8 @@ void synchRun(unsigned long milliseconds)
     }
   }
   synchFlags &= ~SYNCH_RESET_NEXT_STEP_TIME;//clear flag
+
+
 
   if(synchSendMIDI)//Are we sending MIDI synch to slaves?
   {
@@ -2568,6 +2621,8 @@ void editTempoSynch(char keyPress, byte forceRefresh)
   {
   case 0: // Toggle MIDI synch
     synchToMIDI = !synchToMIDI;
+    if(!synchToMIDI)
+      synchResynch();
     eepromSet(EEPROM_SYNCH_SOURCE, synchToMIDI);    
     forceRefresh = 1;
     break;

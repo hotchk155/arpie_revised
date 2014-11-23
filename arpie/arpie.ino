@@ -817,11 +817,11 @@ byte synchClockSendStateTimer;
 #define SYNCH_CLOCK_INVERT         HH_CLOCK_ACTIVELOW
 
 #if HH_CLOCK_ACTIVELOW    
-  #define SYNCH_CLOCK_ON           PORTC &= ~(1<<0)
-  #define SYNCH_CLOCK_OFF          PORTC |= (1<<0)
+  #define SYNCH_CLOCK_ON           PORTC &= ~(1<<4)
+  #define SYNCH_CLOCK_OFF          PORTC |= (1<<4)
 #else
-  #define SYNCH_CLOCK_OFF          PORTC &= ~(1<<0)
-  #define SYNCH_CLOCK_ON           PORTC |= (1<<0)
+  #define SYNCH_CLOCK_OFF          PORTC &= ~(1<<4)
+  #define SYNCH_CLOCK_ON           PORTC |= (1<<4)
 #endif
 
 // PIN DEFS (From PIC MCU servicing MIDI SYNCH input)
@@ -3071,7 +3071,7 @@ byte hhTime;   // stores divided ms just so we can check for ticks
 void hhInit() 
 {
   if((gPreferences & PREF_HACKHEADER) == PREF_HH_SYNCHTAB) {
-    pinMode(14,OUTPUT);
+    pinMode(18,OUTPUT);
     SYNCH_CLOCK_OFF;
   }
   else if((gPreferences & PREF_HH_TYPE) == PREF_HHTYPE_POTS) {

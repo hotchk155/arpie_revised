@@ -1114,13 +1114,15 @@ void synchRun(unsigned long milliseconds)
       synchSetInternalTickPeriod((float)synchThisPulseClockPeriod / SYNCH_TICK_TO_PULSE_RATIO);  // infer bpm
       synchThisPulseClockPeriod = 0;
       synchNextInternalTick = milliseconds;  // tick immediately
+      while(synchInternalTicksSinceLastPulseClock++ < SYNCH_TICK_TO_PULSE_RATIO)
+        synchTick(SYNCH_SOURCE_INTERNAL); // make up any missed ticks (when tempo is being increased)
       synchInternalTicksSinceLastPulseClock = 0;
     }
     
     if(synchClockSendState == SYNCH_HH_EXT_CLOCK && 
       synchInternalTicksSinceLastPulseClock >= SYNCH_TICK_TO_PULSE_RATIO)
     {
-      // hold off any ticks until the next external pulse
+      // hold off any ticks until the next external pulse. External tempo is being reduced
     }
     else if(synchFlags & SYNCH_RESET_NEXT_STEP_TIME)
     {      

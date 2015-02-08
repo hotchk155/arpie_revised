@@ -592,8 +592,9 @@ byte midiOptions;
 #define MIDI_OPTS_PASS_INPUT_CHMSG 0x04
 #define MIDI_OPTS_SYNCH_INPUT      0x08
 #define MIDI_OPTS_SYNCH_AUX        0x10
+#define MIDI_OPTS_FILTER_CHMODE    0x20
 
-#define MIDI_OPTS_MAX_VALUE        0x1F
+#define MIDI_OPTS_MAX_VALUE        0x3F
 #define MIDI_OPTS_DEFAULT_VALUE    (MIDI_OPTS_SEND_CHMSG|MIDI_OPTS_SYNCH_INPUT|MIDI_OPTS_SYNCH_AUX)
 
 // macros
@@ -698,14 +699,14 @@ byte midiRead(unsigned long milliseconds, byte passThru)
       midiInRunningStatus = ch; 
       switch(ch & 0xF0)
       {
+      case 0xA0: //  Aftertouch  1  key  touch  
+      case 0xC0: //  Patch change  1  instrument #   
       case 0xD0: //  Channel Pressure  1  pressure  
         midiNumParams = 1;
         break;    
       case 0x80: //  Note-off  2  key  velocity  
       case 0x90: //  Note-on  2  key  veolcity  
-      case 0xA0: //  Aftertouch  2  key  touch  
       case 0xB0: //  Continuous controller  2  controller #  controller value  
-      case 0xC0: //  Patch change  2  instrument #   
       case 0xE0: //  Pitch bend  2  lsb (7 bits)  msb (7 bits)  
       default:
         midiNumParams = 2;
@@ -734,6 +735,14 @@ byte midiRead(unsigned long milliseconds, byte passThru)
             if(!!(midiOptions & MIDI_OPTS_PASS_INPUT_NOTES))
               midiWrite(midiInRunningStatus, midiParams[0], midiParams[1], midiNumParams, milliseconds);                
             return midiInRunningStatus; // return to the arp engine
+          case 0xB0: // CC
+            if(!!(midiOptions & MIDI_OPTS_FILTER_CHMODE)) {
+              if(midiParams[0] >= 120) {
+                // break from switch - ignore message
+                break;
+              }
+            }
+            // otherwise fall through
           default:
             if(!!(midiOptions & MIDI_OPTS_PASS_INPUT_CHMSG))
               midiWrite(midiInRunningStatus, midiParams[0], midiParams[1], midiNumParams, milliseconds);                  
@@ -2516,6 +2525,12 @@ void editMidiOptions(char keyPress, byte forceRefresh)
     eepromSet(EEPROM_MIDI_OPTS, midiOptions);    
     forceRefresh = 1;
   }
+  else if(5 == keyPress)
+  {    
+    midiOptions ^= MIDI_OPTS_FILTER_CHMODE;
+    eepromSet(EEPROM_MIDI_OPTS, midiOptions);    
+    forceRefresh = 1;
+  }
   if(forceRefresh)
   {
     uiClearLeds();
@@ -2524,6 +2539,7 @@ void editMidiOptions(char keyPress, byte forceRefresh)
     uiLeds[2] = !!(midiOptions&MIDI_OPTS_PASS_INPUT_CHMSG)? uiLedBright : uiLedDim;
     uiLeds[3] = !!(midiOptions&MIDI_OPTS_SYNCH_INPUT)? uiLedBright : uiLedDim;
     uiLeds[4] = !!(midiOptions&MIDI_OPTS_SYNCH_AUX)? uiLedBright : uiLedDim;
+    uiLeds[5] = !!(midiOptions&MIDI_OPTS_FILTER_CHMODE)? uiLedBright : uiLedDim;    
   }    
 }
 

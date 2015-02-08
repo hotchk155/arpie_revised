@@ -830,7 +830,7 @@ byte synchClockSendStateTimer;                 // used to detect change in ms
   #define SYNCH_HH_CLOCK_ON           PORTC |= (1<<4)
 #endif
 #define SYCH_HH_CLOCK_IN              (PINC & (1<<0))
-#define SYNCH_HH_INPUT_DETECT         (PINC & (1<<5))
+#define SYNCH_HH_INPUT_DETECT         (!(PINC & (1<<5)))
 #define SYNCH_HH_ENABLE_PCINT         (PCMSK1 |= (1<<0))
 #define SYNCH_HH_DISABLE_PCINT        (PCMSK1 &= ~(1<<0))
 
@@ -3160,14 +3160,14 @@ byte hhTime;   // stores divided ms just so we can check for ticks
 // Initialise hack header manager
 void hhInit() 
 {
-/*  if(IS_HH_POTS) {
+  if(IS_HH_POTS) {
     pinMode(P_HH_POT_PC5,INPUT);
     pinMode(P_HH_POT_PC4,INPUT);
     pinMode(P_HH_POT_PC0,INPUT);
   }
   Pot1.reset();
   Pot2.reset();
-  Pot3.reset();*/
+  Pot3.reset();
   hhTime = 0;
 }
 
@@ -3333,7 +3333,7 @@ void loop()
   heartbeatRun(milliseconds);
   uiRun(milliseconds);
   editRun(milliseconds);   
-//  hhRun(milliseconds);
+  hhRun(milliseconds);
 }
 
 //EOF
